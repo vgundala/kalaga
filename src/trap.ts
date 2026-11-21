@@ -1,0 +1,48 @@
+// The trap: watch an agent's output for a "limit reached" signature.
+// Two capture modes, matching the design:
+//   (a) warm-ledger — the state.yaml was already being kept live, so when the
+//       agent dies we already have the handoff; nothing to scrape from a corpse.
+//   (b) live-ask    — at a chosen seam, spend a little of the LIVE agent's
+//       remaining budget (print mode) to get a proper summary before it dies.
+// This module handles (a): pattern-match on streamed output + exit code.
+import type { AgentConfig } from './config.ts';
+
+export interface LimitHit {
+  agent: string;
+  matched: string;       // the signature that fired
+  line: string;          // the offending line, for the user to see
+  exitCode: number | null;
+}
+
+/** Returns the matched signature if `line` looks like a quota/limit failure
+ *  for `agent`, else null. */
+export function matchLimit(line: string, agent: AgentConfig): string | null {
+  const lower = line.toLowerCase();
+  for (const pat of agent.limitPatterns) {
+    if (new RegExp(pat, 'i').test(lower)) return pat;
+  }
+  return null;
+}
+
+/** Scan a chunk of output; return the first LimitHit found, else null. */
+export function scanChunk(chunk: string, agent: AgentConfig, exitCode: number | null = null): LimitHit | null {
+  for (const line of chunk.split('\n')) {
+    const m = matchLimit(line, agent);
+    if (m) return { agent: agent.key, matched: m, line: line.trim().slice(0, 200), exitCode };
+  }
+  return null;
+}
+
+/** A small ring of recent output so the trap can be shown to the user without
+ *  keeping the whole transcript in memory. */
+export class OutputRing {
+  private buf: string[] = [];
+  private size: number;
+  constructor(size = 2000) { this.size = size; }
+  push(chunk: string): void { this.buf.push(chunk); this.trim(); }
+  private trim(): void {
+    let total = this.buf.reduce((a, b) => a + b.length, 0);
+    while (total > this.size && this.buf.length > 1) { total -= this.buf.shift()!.length; }
+  }
+  text(): string { return this.buf.join(''); }
+}

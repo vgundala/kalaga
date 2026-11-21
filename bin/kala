@@ -1,0 +1,3 @@
+#!/usr/bin/env -S node --no-warnings
+// Entry shim. Rename the app → rename this file + the strings in src/index.ts.
+import '../src/index.ts';
