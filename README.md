@@ -47,6 +47,21 @@ kala agents               # list known agent keys
 4. You press `1` (or Enter for the recommendation). The next agent opens
    with the state injected.
 
+### After any agent exits
+
+Every agent launched via bare `kala` or `kala run` is followed by a
+**tiered prompt** based on the evidence of *why* it stopped:
+
+| Evidence | What kala does |
+|----------|----------------|
+| Limit signature in the session log | `💀 <agent> — limit hit` → picker (Enter = taker) |
+| No session log + non-zero exit code | `assume it hit its limit? [y/N]` (or `kala --assume-limit`) |
+| Clean exit (code 0 / no signature) | `hand off, or stay?` → **Enter stays**, number = hand off |
+
+`q` (or `e`) always returns to your shell without launching. A clean exit
+is never classified as a limit hit, and nothing is ever launched on a clean
+exit unless you type a number — so a deliberate `/exit` costs one keypress.
+
 ## How it works
 
 - **`.kala/state.yaml`** — the single source of truth for handoff (goal,

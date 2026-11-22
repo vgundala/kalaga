@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | SEC-001 |
 | **Version** | v1 |
-| **Status** | `locked` |
+| **Status** | `done` (CERT-001 pass-with-waivers) |
 | **Date** | 2026-11-21 |
 | **Supersedes** | Informal `docs/SECURITY_REMEDIATION_SPEC.md` (moved here) |
 | **Owner** | Technical lead |

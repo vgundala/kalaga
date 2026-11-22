@@ -34,3 +34,17 @@ export function scanChunk(chunk: string, agent: AgentConfig, exitCode: number | 
 }
 // U1: OutputRing removed — nothing consumed it (the trap is store-tail-based,
 // not streamed, so there is no in-process ring to keep).
+
+// ---------- FEAT-001: evidence-tiered exit classification ----------
+
+export type ExitTier = 'limit' | 'suspect' | 'clean';
+
+/** E2: classify an agent exit by evidence. Pure — unit-testable.
+ *  limit   — a limit signature was found in the session tail (definite)
+ *  suspect — no readable tail and a non-zero exit code (no way to verify)
+ *  clean   — anything else (zero exit, or store present without signature) */
+export function classifyExit(input: { hit: LimitHit | null; exitCode: number; hasTail: boolean }): ExitTier {
+  if (input.hit) return 'limit';
+  if (!input.hasTail && input.exitCode !== 0) return 'suspect';
+  return 'clean';
+}

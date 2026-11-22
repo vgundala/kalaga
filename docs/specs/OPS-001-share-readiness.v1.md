@@ -8,7 +8,7 @@
 | **Date** | 2026-11-21 |
 | **Supersedes** | — |
 | **Owner** | Technical lead |
-| **Depends on** | ARCH-001 v1; SEC-001 v1 `done` |
+| **Depends on** | ARCH-001 v1; SEC-001 v1 `done` (satisfied — CERT-001) |
 | **Build priority** | 2 (after SEC-001 certify) |
 
 ---

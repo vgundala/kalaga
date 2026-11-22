@@ -26,7 +26,7 @@ import { currentBranch, modifiedFiles, gitSummary } from './state/git.ts';
 import { rankTakers, isFresh } from './router.ts';
 import { pick } from './picker.ts';
 import { runAgent, lastSessionText } from './launch.ts';
-import { scanChunk } from './trap.ts';
+import { scanChunk, classifyExit } from './trap.ts';
 import { promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
 import { handoffInject, nextStepHint, injectRichPrompt } from './prompt.ts';
 
@@ -109,6 +109,7 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   const recs = rankTakers(ledger, deadKey, state.owner ?? null);
   if (!recs.length) { console.error('kalaga: no agents to take over.'); return; }
   const choice = await pick(recs, ledger, deadKey ?? 'none');
+  if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   if (choice.wait) {
     console.error(`kalaga: staying put — will reset; rerun kala run ${deadKey} later.`);
     return;
@@ -124,6 +125,68 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
 
 // P1: injectPrompt removed — handoffInject (src/prompt.ts) is the single,
 // sanitizing prompt API.
+
+// ---------- FEAT-001: evidence-tiered post-exit flow ----------
+
+/** E3: one-line stderr notice of how the agent exited. */
+function exitNotice(agentKey: string, exitCode: number, hit: ReturnType<typeof scanChunk>, hasTail: boolean): void {
+  if (hit) console.error(`  💀 ${agentKey} — limit hit (matched "${hit.matched}")`);
+  else if (!hasTail && exitCode !== 0) console.error(`  ${agentKey} exited (code ${exitCode}) — no session log to scan`);
+  else console.error(`  ${agentKey} exited cleanly (code ${exitCode}).`);
+}
+
+/** E6: suspect-tier confirm — same gate as SEC-001 L2 in doRecover. */
+async function confirmAssumeLimit(deadKey: string, exitCode: number): Promise<boolean> {
+  if (process.argv.includes('--assume-limit')) return true;
+  if (!process.stdin.isTTY) return false;
+  process.stderr.write(`  assume it hit its limit? [y/N] `);
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const ans = await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }));
+  if (ans.trim().toLowerCase() === 'y') console.error(`  💀 ${deadKey} — limit hit assumed (code ${exitCode}, no store to verify)`);
+  return ans.trim().toLowerCase() === 'y';
+}
+
+/** E1/E4: shared post-exit flow for bare `kala` and `kala run`. Classifies
+ *  the exit (E2), notices it (E3), then:
+ *   limit   → offerHandoff (BLOCKED + L3 note + limit picker)
+ *   suspect → [y/N] (E6): y → offerHandoff, n → final facts + shell
+ *   clean   → refreshState(null) + stay-default menu (E7): number = hand off,
+ *             Enter/q = back to shell. No auto-launch on a non-limit exit (A5).
+ *  E9: whatever this flow does is the last action of this invocation. */
+async function afterExit(agentKey: string, exitCode: number): Promise<void> {
+  const cfg = agentFor(agentKey);
+  const tail = (await lastSessionText(cfg, repoDir)).slice(-4000);
+  const hit = tail ? scanChunk(tail, cfg, exitCode) : null;
+  const tier = classifyExit({ hit, exitCode, hasTail: tail !== '' });
+  exitNotice(agentKey, exitCode, hit, tail !== '');
+
+  if (tier === 'limit') {
+    await offerHandoff(agentKey);
+    return;
+  }
+  if (tier === 'suspect') {
+    if (await confirmAssumeLimit(agentKey, exitCode)) await offerHandoff(agentKey);
+    else await refreshState(null);
+    return;
+  }
+  // clean
+  const st = await refreshState(null);
+  const ledger = await readLedger(repoDir);
+  const recs = rankTakers(ledger, null, st.owner ?? null);
+  if (!recs.length) { console.error('kalaga: nothing else to hand off to — back to your shell.'); return; }
+  const choice = await pick(recs, ledger, null, {
+    stayDefault: true,
+    header: `  hand off, or stay?`,
+  });
+  if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
+  const next = agentFor(choice.agent);
+  const st2 = mergeState(repoDir, { owner: next.key });
+  console.error(`  ${nextStepHint(st2)}`);
+  const trust = await resolveTrust(next);
+  console.error(`kalaga → handing off to ${next.key}`);
+  await runAgent(next, repoDir, handoffInject(st2, injectRichPrompt()), trust);
+}
 
 async function doStart(): Promise<void> {
   // Bare `kala`: discover what's installed here, pick, launch.
@@ -146,7 +209,8 @@ async function doStart(): Promise<void> {
   const fresh = st.goal.startsWith('not captured');
   const trust = await resolveTrust(next);
   console.error(`kalaga → starting ${next.key}`);
-  await runAgent(next, repoDir, fresh ? null : handoffInject(st, injectRichPrompt()), trust);
+  const exitCode = await runAgent(next, repoDir, fresh ? null : handoffInject(st, injectRichPrompt()), trust);
+  await afterExit(next.key, exitCode);
 }
 
 async function doRun(agentKey: string): Promise<void> {
@@ -155,17 +219,10 @@ async function doRun(agentKey: string): Promise<void> {
   mergeState(repoDir, { owner: agent.key });
   const fresh = loadState(repoDir);
   const trust = await resolveTrust(agent);
-  await runAgent(agent, repoDir, fresh?.goal.startsWith('not captured') ? null : handoffInject(fresh!, injectRichPrompt()), trust);
-  // SEC-001 L1: only a real signature in the session tail is a limit hit.
-  // Empty tail (clean exit, or no readable store) → no picker.
-  const tail = (await lastSessionText(agent, repoDir)).slice(-4000);
-  const hit = tail ? scanChunk(tail, agent, null) : null;
-  if (hit) {
-    await offerHandoff(agent.key);
-  } else {
-    // exited cleanly — still record final facts
-    await refreshState(null);
-  }
+  const exitCode = await runAgent(agent, repoDir, fresh?.goal.startsWith('not captured') ? null : handoffInject(fresh!, injectRichPrompt()), trust);
+  // FEAT-001: tiered post-exit flow (SEC-001 L1 still holds — a clean exit
+  // is never classified as a limit hit; it just gets a stay-default menu).
+  await afterExit(agent.key, exitCode);
 }
 
 async function doRecover(): Promise<void> {
@@ -269,9 +326,11 @@ async function main(): Promise<void> {
     }
     case undefined:
     case '':
+      // `kala --assume-limit` (and any leading flag) = bare start with that flag
       await doStart();
       break;
     default:
+      if (cmd.startsWith('--')) { await doStart(); break; }
       console.log(`kalaga — seamless handoff across agy / cursor / grok / claude
   kala status               headroom per agent + handoff state
   kala run <agent>          work in <agent>; on limit hit → pick a taker
