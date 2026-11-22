@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { loadAgents, AGENT_ORDER, isInstalled } from './config.ts';
+import { loadAgents, AGENT_ORDER, isInstalled, claudeSessionFiles, claudeProjectDir, tailBytes, USAGE_MAX_BYTES } from './config.ts';
 import type { AgentKey, AgentConfig } from './config.ts';
 
 export interface AgentUsage {
@@ -24,20 +24,13 @@ export interface AgentUsage {
 
 // ---------- claude: exact from ~/.claude/projects/<cwd-escaped>/*.jsonl ----------
 function claudeUsage(repoDir: string): { tokens: number; lastUsed: number | null; sessionHint: string | null } {
-  const escaped = repoDir.replace(/[^a-zA-Z0-9]/g, '-');
-  const dir = path.join(os.homedir(), '.claude', 'projects', escaped);
-  let newest: number = 0;
-  let newestFile: string | null = null;
-  try {
-    for (const f of fs.readdirSync(dir)) {
-      if (!f.endsWith('.jsonl')) continue;
-      const st = fs.statSync(path.join(dir, f));
-      if (st.mtimeMs > newest) { newest = st.mtimeMs; newestFile = f; }
-    }
-  } catch { return { tokens: 0, lastUsed: null, sessionHint: null }; }
-  if (!newestFile) return { tokens: 0, lastUsed: null, sessionHint: null };
+  const files = claudeSessionFiles(repoDir); // C3 shared helper + C2 disambig
+  if (!files.length) return { tokens: 0, lastUsed: null, sessionHint: null };
+  const newestFile = files[0]; // newest-first
+  const full = path.join(claudeProjectDir(repoDir), newestFile);
   let tokens = 0;
-  const lines = fs.readFileSync(path.join(dir, newestFile), 'utf8').split('\n');
+  // R1: bounded tail read, never an unbounded readFileSync.
+  const lines = tailBytes(full, USAGE_MAX_BYTES).split('\n');
   for (const line of lines) {
     if (!line.includes('"usage"')) continue;
     try {
@@ -52,7 +45,9 @@ function claudeUsage(repoDir: string): { tokens: number; lastUsed: number | null
       }
     } catch { /* skip bad line */ }
   }
-  return { tokens, lastUsed: newest, sessionHint: newestFile };
+  let lastUsed: number | null = null;
+  try { lastUsed = fs.statSync(full).mtimeMs; } catch { /* */ }
+  return { tokens, lastUsed, sessionHint: newestFile };
 }
 
 // ---------- grok: exact via sqlite session id + `grok usage <sid>` ----------
@@ -89,16 +84,23 @@ async function grokUsage(repoDir: string): Promise<{ tokens: number; lastUsed: n
 }
 
 // ---------- cursor: estimate from ~/.cursor/chats/**/meta.json (cwd match) ----------
+// R2: bounded walk — cap the number of meta.json files inspected so a machine
+// with thousands of chats doesn't make `kala status` slow.
+const CURSOR_META_SCAN_CAP = 2000;
 function cursorUsage(repoDir: string): { tokens: number; lastUsed: number | null; sessionHint: string | null } {
   const root = path.join(os.homedir(), '.cursor', 'chats');
   let best: { tokens: number; mtime: number; hint: string } | null = null;
+  let scanned = 0;
   try {
     for (const outer of fs.readdirSync(root)) {
+      if (scanned >= CURSOR_META_SCAN_CAP) break;
       const od = path.join(root, outer);
       if (!fs.statSync(od).isDirectory()) continue;
       for (const chat of fs.readdirSync(od)) {
+        if (scanned >= CURSOR_META_SCAN_CAP) break;
         const metaPath = path.join(od, chat, 'meta.json');
         if (!fs.existsSync(metaPath)) continue;
+        scanned++;
         let meta: { cwd?: string; updatedAtMs?: number; hasConversation?: boolean };
         try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch { continue; }
         if (meta.cwd !== repoDir || !meta.hasConversation) continue;

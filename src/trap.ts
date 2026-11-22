@@ -32,17 +32,5 @@ export function scanChunk(chunk: string, agent: AgentConfig, exitCode: number | 
   }
   return null;
 }
-
-/** A small ring of recent output so the trap can be shown to the user without
- *  keeping the whole transcript in memory. */
-export class OutputRing {
-  private buf: string[] = [];
-  private size: number;
-  constructor(size = 2000) { this.size = size; }
-  push(chunk: string): void { this.buf.push(chunk); this.trim(); }
-  private trim(): void {
-    let total = this.buf.reduce((a, b) => a + b.length, 0);
-    while (total > this.size && this.buf.length > 1) { total -= this.buf.shift()!.length; }
-  }
-  text(): string { return this.buf.join(''); }
-}
+// U1: OutputRing removed — nothing consumed it (the trap is store-tail-based,
+// not streamed, so there is no in-process ring to keep).

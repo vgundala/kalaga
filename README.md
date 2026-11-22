@@ -8,6 +8,7 @@ offers to continue the work on a fresh agent — one keypress.
 
 ```sh
 ln -s ~/Code/playground/kalaga/bin/kala ~/.local/bin/kala
+chmod 755 bin/kala          # user-local only; not intended for system-wide install
 ```
 
 Requires Node ≥ 24 (native TypeScript type-stripping — no build step, no deps).
@@ -23,6 +24,8 @@ kala recover              # after a limit hit (works even if the agent was
 kala switch <agent>       # hand off to <agent> now
 kala why [deadAgent]      # show the taker ranking (dry run)
 kala state goal|next|note|neg <text>   # edit the handoff state by hand
+kala trust                # list trust grants
+kala trust revoke <path>  # drop one grant (or: kala trust revoke --all)
 kala agents               # list known agent keys
 ```
 
@@ -77,6 +80,35 @@ ceilings:
 Limit-detection signatures and agent binaries live in `src/config.ts`
 (`limitPatterns` per agent). If an agent's limit message isn't caught, add
 its phrase there.
+
+## Security
+
+- **Trust propagates; it does not invent.** A cold launch of a trust-capable
+  agent (cursor, `--trust`) asks once: `Trust this directory for Kalaga
+  handoffs? [y/N]`. On `y` a grant for that exact directory (realpath) is
+  recorded in `~/.kala/trust.yaml` and later handoffs reuse it. No grant →
+  no trust-skip flag. A different path prompts again; an expired grant
+  (default 30d, `trust_ttl_days:` in config) prompts again. Manage with
+  `kala trust` / `kala trust revoke [path|--all]`.
+- **Handoff state is an instruction surface.** `.kala/state.yaml` can be
+  written by any agent (or a hostile repo), so every field is sanitized
+  (ASCII controls stripped, length-capped) before it enters the receiving
+  agent's prompt, and the default inject is just a pointer + next step.
+  **Gitignore `.kala/`** and never put secrets in the state.
+- **State writes never follow symlinks.** `.kala` must be a real directory
+  and `state.yaml` a real file; writes go to a temp file + atomic rename at
+  mode `0600`.
+- **Honest limit detection.** A clean exit (empty session tail) is not a
+  limit hit — no picker. Recovering from a store-less agent (agy) requires
+  `--assume-limit` or an explicit `y`.
+- **Binaries are resolved once.** Each agent's binary is resolved to an
+  absolute path before spawn; kala trusts that resolved binary at launch
+  time (it does not re-hash it). Hostile `PATH` entries at first resolve are
+  an accepted residual, as is passing `process.env` to children.
+- **Claude project-dir lookup** uses one shared helper and disambiguates
+  dash-escape collisions via per-session `cwd` metadata when present.
+  Residual risk: two realpaths whose Claude sessions carry no `cwd` line
+  cannot be told apart — a vendor layout limitation, not fixable here.
 
 ## Notes
 

@@ -78,8 +78,24 @@ export function loadState(repoDir: string): HandoffState | null {
 }
 
 export function saveState(repoDir: string, s: HandoffState): void {
+  // SEC-001 S1–S4: refuse symlinked state paths, require a real .kala dir,
+  // write 0600, and replace atomically (temp + rename).
+  const dir = path.dirname(stateFile(repoDir));
   const f = stateFile(repoDir);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(dir);
+  } catch {
+    fs.mkdirSync(dir, { recursive: true });
+    st = fs.lstatSync(dir);
+  }
+  if (st.isSymbolicLink()) throw new Error(`refusing to write state: ${dir} is a symlink`);
+  if (!st.isDirectory()) throw new Error(`refusing to write state: ${dir} is not a directory`);
+  try {
+    if (fs.lstatSync(f).isSymbolicLink()) throw new Error(`refusing to write state: ${f} is a symlink`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
   const clean = { ...s };
   delete (clean as { _source?: string })._source;
   let out = `# kalaga handoff state — read this before acting.\n`;
@@ -95,7 +111,9 @@ export function saveState(repoDir: string, s: HandoffState): void {
     next_step: s.next_step,
     notes: s.notes,
   });
-  fs.writeFileSync(f, out);
+  const tmp = path.join(dir, `.${path.basename(f)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, out, { mode: 0o600 });
+  fs.renameSync(tmp, f);
 }
 
 /** Merge a partial update into the current state (or a blank one), bumping
@@ -109,16 +127,5 @@ export function mergeState(repoDir: string, patch: Partial<HandoffState>, source
   return next;
 }
 
-/** The prompt we inject when launching the receiving agent. Plain text,
- *  works with --append-system-prompt or as an initial prompt. */
-export function handoffPrompt(s: HandoffState): string {
-  return [
-    `Kalaga handoff — continue this work. Read ${'.kala/state.yaml'} in the project root before acting.`,
-    `Goal: ${s.goal}`,
-    `Last owned by: ${s.owner ?? 'unknown'}${s.branch ? ` on branch ${s.branch}` : ''}.`,
-    s.modified_files.length ? `Modified files: ${s.modified_files.join(', ')}` : '',
-    s.negative_constraints.length ? `DO NOT repeat (already failed): ${s.negative_constraints.join(' | ')}` : '',
-    `Next step: ${s.next_step}`,
-    s.notes ? `Context: ${s.notes}` : '',
-  ].filter(Boolean).join('\n');
-}
+// P1: handoffPrompt removed — the single prompt API lives in src/prompt.ts
+// (handoffInject), which sanitizes untrusted state fields.

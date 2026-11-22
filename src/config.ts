@@ -116,7 +116,10 @@ export function configPath(): string {
  * we accept a flat `  agent: 123456` ceiling map under `ceilings:`.
  */
 export function loadAgents(): Record<AgentKey, AgentConfig> {
-  const out = AGENTS;
+  // SEC-001 M1: return copies — config overrides must never mutate AGENTS.
+  const out = Object.fromEntries(
+    AGENT_ORDER.map((k) => [k, { ...AGENTS[k], limitPatterns: [...AGENTS[k].limitPatterns], store: { ...AGENTS[k].store } }]),
+  ) as Record<AgentKey, AgentConfig>;
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
     const m = raw.match(/^ceilings:\s*\n((?:\s{2}\w+:\s*\d+\s*\n?)+)/m);
@@ -142,14 +145,80 @@ export function agentFor(key: string): AgentConfig {
  *  names → PATH lookup. This is how kala discovers the roster on a machine
  *  where the user only has some of the four. */
 export function isInstalled(agent: AgentConfig): boolean {
-  const cmd = agent.interactive[0];
-  if (path.isAbsolute(cmd)) return fs.existsSync(cmd);
-  const dirs = (process.env.PATH ?? '').split(':');
-  return dirs.some((d) => {
-    const p = path.join(d, cmd);
+  return resolveExecutable(agent.interactive[0]) !== null;
+}
+
+/** SEC-001 B1/B2: resolve a command to an absolute executable path once,
+ *  or null. Absolute inputs are verified as-is; bare names walk PATH in
+ *  order (first executable wins). Cached per-process so a PATH change mid-run
+ *  can't swap the binary (B3: spawn always gets the resolved path). */
+const resolvedCache = new Map<string, string | null>();
+export function resolveExecutable(cmd: string): string | null {
+  if (resolvedCache.has(cmd)) return resolvedCache.get(cmd) ?? null;
+  let r: string | null = null;
+  if (path.isAbsolute(cmd)) {
     try {
-      const st = fs.statSync(p);
-      return st.isFile() && (st.mode & 0o111) !== 0; // executable bit set
-    } catch { return false; }
-  });
+      const st = fs.statSync(cmd);
+      if (st.isFile() && (st.mode & 0o111) !== 0) r = fs.realpathSync(cmd);
+    } catch { r = null; }
+  } else {
+    for (const d of (process.env.PATH ?? '').split(':')) {
+      const p = path.join(d, cmd);
+      try {
+        const st = fs.statSync(p);
+        if (st.isFile() && (st.mode & 0o111) !== 0) { r = fs.realpathSync(p); break; }
+      } catch { /* keep looking */ }
+    }
+  }
+  resolvedCache.set(cmd, r);
+  return r;
+}
+
+/** SEC-001 C1–C3: the ONE place that maps a repo dir to Claude's on-disk
+ *  project dir (~/.claude/projects/<escaped>). Escape = every non
+ *  [a-zA-Z0-9] char → '-', matching Claude Code's layout. */
+export function claudeProjectDir(repoDir: string): string {
+  const escaped = repoDir.replace(/[^a-zA-Z0-9]/g, '-');
+  return path.join(os.homedir(), '.claude', 'projects', escaped);
+}
+
+/** SEC-001 C2: list jsonl session files for a repo. When Claude's dash-escape
+ *  collides (two distinct realpaths → same escaped name), prefer sessions
+ *  whose own per-line `cwd` metadata matches `repoDir`. Returns newest-first. */
+export function claudeSessionFiles(repoDir: string): string[] {
+  const dir = claudeProjectDir(repoDir);
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+    const stamped = files.map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }));
+    // Collision disambiguation: if any file's first line carries a cwd that
+    // does NOT match repoDir, it likely belongs to a colliding project — drop
+    // it unless nothing matches.
+    const cwdOf = (full: string): string | null => {
+      try {
+        const head = tailBytes(full, 64 * 1024);
+        const m = head.match(/"cwd":"([^"]*)"/);
+        return m ? m[1] : null;
+      } catch { return null; }
+    };
+    const matching = stamped.filter(({ f }) => {
+      const cwd = cwdOf(path.join(dir, f));
+      return cwd === null || cwd === repoDir; // keep cwd-less or matching
+    });
+    const pool = matching.length ? matching : stamped;
+    pool.sort((a, b) => b.mtime - a.mtime);
+    return pool.map((x) => x.f);
+  } catch { return []; }
+}
+
+/** SEC-001 R1: read only the trailing `maxBytes` of a file — never an
+ *  unbounded readFileSync on a huge session log. */
+export const USAGE_MAX_BYTES = 8 * 1024 * 1024;
+export function tailBytes(file: string, maxBytes: number): string {
+  const st = fs.statSync(file);
+  const start = Math.max(0, st.size - maxBytes);
+  const fd = fs.openSync(file, 'r');
+  const buf = Buffer.alloc(st.size - start);
+  fs.readSync(fd, buf, 0, buf.length, start);
+  fs.closeSync(fd);
+  return buf.toString('utf8');
 }

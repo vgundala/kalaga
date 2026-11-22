@@ -18,6 +18,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { loadAgents, agentFor } from './config.ts';
+import type { AgentConfig } from './config.ts';
 import { readLedger } from './ledger.ts';
 import { loadState, mergeState, blankState, saveState } from './state/state.ts';
 import type { HandoffState } from './state/state.ts';
@@ -26,6 +27,8 @@ import { rankTakers, isFresh } from './router.ts';
 import { pick } from './picker.ts';
 import { runAgent, lastSessionText } from './launch.ts';
 import { scanChunk } from './trap.ts';
+import { promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
+import { handoffInject, nextStepHint, injectRichPrompt } from './prompt.ts';
 
 const repoDir = process.cwd();
 
@@ -69,21 +72,35 @@ async function printWhy(dead: string | null): Promise<void> {
 /** Refresh the warm state from git facts + the agent's own session tail. */
 async function refreshState(deadKey: string | null): Promise<HandoffState> {
   let text = '';
+  let hit: ReturnType<typeof scanChunk> = null;
   if (deadKey) {
     const cfg = agentFor(deadKey);
     text = await lastSessionText(cfg, repoDir);
-    const hit = scanChunk(text.slice(-4000), cfg, null);
+    hit = scanChunk(text.slice(-4000), cfg, null);
     if (hit) console.error(`  💀 ${deadKey} — limit hit (matched "${hit.matched}")`);
   }
   const cur = loadState(repoDir) ?? blankState(repoDir, currentBranch(repoDir));
+  // L3: on a signature match, persist a short limit note (≤200 chars) so the
+  // next agent knows why we're here. Deduped so repeated refreshes don't
+  // stack identical constraints.
+  const limitNote = hit && deadKey ? `${deadKey} limit hit: ${hit.line}`.slice(0, 200) : null;
   return mergeState(repoDir, {
     modified_files: modifiedFiles(repoDir),
     branch: currentBranch(repoDir),
     status: deadKey ? 'BLOCKED' : cur.status,
     notes: cur.notes || gitSummary(repoDir),
-    // capture the limit line into the state so the next agent knows why we're here
-    ...(deadKey && text ? { negative_constraints: [...cur.negative_constraints] } : {}),
+    ...(limitNote && !cur.negative_constraints.includes(limitNote)
+      ? { negative_constraints: [...cur.negative_constraints, limitNote] }
+      : {}),
   }, 'tailer');
+}
+
+/** SEC-001 T4/T6/T7: resolve whether to pass trustFlags for this launch.
+ *  Trust-capable agent (has trustFlags) with no grant → Option A prompt once.
+ *  Agents with no trustFlags are never "trusted" (nothing to pass). */
+async function resolveTrust(agent: AgentConfig): Promise<boolean> {
+  if (!agent.trustFlags.length) return false;
+  return promptTrustGrant(repoDir);
 }
 
 async function offerHandoff(deadKey: string | null): Promise<void> {
@@ -98,18 +115,15 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   }
   const next = agentFor(choice.agent);
   const st = mergeState(repoDir, { owner: next.key }, 'tailer');
+  // P4: one-line continuation hint on stderr before the launch (non-blocking).
+  console.error(`  ${nextStepHint(st)}`);
+  const trust = await resolveTrust(next);
   console.error(`kalaga → handing off to ${next.key}`);
-  await runAgent(next, repoDir, injectPrompt(st));
+  await runAgent(next, repoDir, handoffInject(st, injectRichPrompt()), trust);
 }
 
-/** What we hand the receiving agent: a pointer to the state file plus the
- *  next step. Kept short — the file is the source of truth. */
-function injectPrompt(s: HandoffState): string {
-  return [
-    `Kalaga handoff from ${s.owner ?? 'another agent'}. Read .kala/state.yaml in the project root before doing anything.`,
-    `Next step: ${s.next_step}`,
-  ].join(' ');
-}
+// P1: injectPrompt removed — handoffInject (src/prompt.ts) is the single,
+// sanitizing prompt API.
 
 async function doStart(): Promise<void> {
   // Bare `kala`: discover what's installed here, pick, launch.
@@ -130,8 +144,9 @@ async function doStart(): Promise<void> {
   const next = agentFor(choice.agent);
   const st = mergeState(repoDir, { owner: next.key });
   const fresh = st.goal.startsWith('not captured');
+  const trust = await resolveTrust(next);
   console.error(`kalaga → starting ${next.key}`);
-  await runAgent(next, repoDir, fresh ? null : injectPrompt(st));
+  await runAgent(next, repoDir, fresh ? null : handoffInject(st, injectRichPrompt()), trust);
 }
 
 async function doRun(agentKey: string): Promise<void> {
@@ -139,12 +154,12 @@ async function doRun(agentKey: string): Promise<void> {
   const pre = await refreshState(null);
   mergeState(repoDir, { owner: agent.key });
   const fresh = loadState(repoDir);
-  await runAgent(agent, repoDir, fresh?.goal.startsWith('not captured') ? null : injectPrompt(fresh!));
-  // Agent exited. Offer the handoff if it hit a limit (detected from its log,
-  // or trusted for agents with no readable store — the user runs this knowing
-  // the agent just stopped).
+  const trust = await resolveTrust(agent);
+  await runAgent(agent, repoDir, fresh?.goal.startsWith('not captured') ? null : handoffInject(fresh!, injectRichPrompt()), trust);
+  // SEC-001 L1: only a real signature in the session tail is a limit hit.
+  // Empty tail (clean exit, or no readable store) → no picker.
   const tail = (await lastSessionText(agent, repoDir)).slice(-4000);
-  const hit = tail ? scanChunk(tail, agent, null) : { agent: agent.key, matched: 'no-store', line: '', exitCode: null };
+  const hit = tail ? scanChunk(tail, agent, null) : null;
   if (hit) {
     await offerHandoff(agent.key);
   } else {
@@ -176,9 +191,18 @@ async function doRecover(): Promise<void> {
       return;
     }
   } else {
-    // No readable store for this agent (e.g. agy) — trust that recover is
-    // only run after a limit hit.
-    console.error(`  💀 ${dead} — no session log to scan (trusting limit hit)`);
+    // SEC-001 L2: no readable store (e.g. agy) — never assume the limit
+    // silently. Require --assume-limit or an explicit [y/N].
+    const assume = process.argv.includes('--assume-limit');
+    let ok = assume;
+    if (!ok && process.stdin.isTTY) {
+      process.stderr.write(`  no session log to scan for ${dead} — assume it hit its limit? [y/N] `);
+      const { createInterface } = await import('node:readline');
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
+      ok = (await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }))).trim().toLowerCase() === 'y';
+    }
+    if (!ok) { console.error('kalaga: not assuming a limit hit — rerun with --assume-limit or confirm.'); return; }
+    console.error(`  💀 ${dead} — limit hit assumed (no store to verify)`);
   }
   await offerHandoff(dead);
 }
@@ -187,7 +211,8 @@ async function doSwitch(agentKey: string): Promise<void> {
   const agent = agentFor(agentKey);
   await refreshState(null);
   const owned = mergeState(repoDir, { owner: agent.key });
-  await runAgent(agent, repoDir, injectPrompt(owned));
+  const trust = await resolveTrust(agent);
+  await runAgent(agent, repoDir, handoffInject(owned, injectRichPrompt()), trust);
 }
 
 function doState(sub: string | null, text: string): void {
@@ -212,6 +237,20 @@ function doInit(): void {
   console.error(`kalaga: .kala/state.yaml created (branch=${branch ?? '—'}, ${s.modified_files.length} files)`);
 }
 
+function doTrust(args: string[]): void {
+  const sub = args[0];
+  if (sub === 'revoke') {
+    const all = args.includes('--all');
+    revokeTrust(all ? null : (args[1] ?? null), all);
+    console.error(all ? 'kalaga: all trust grants revoked' : `kalaga: trust revoked for ${args[1] ?? '(current dir)'}`);
+    return;
+  }
+  // default: status
+  const grants = trustStatus();
+  if (!grants.length) { console.log('no trust grants — first cold launch of a trust-capable agent will ask'); return; }
+  for (const g of grants) console.log(`${g.path}  (${g.granted_at.slice(0, 10)} → ${g.expires_at.slice(0, 10)})`);
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   switch (cmd) {
@@ -221,6 +260,7 @@ async function main(): Promise<void> {
     case 'recover': await doRecover(); break;
     case 'switch': if (!rest[0]) throw new Error('usage: kala switch <agent>'); await doSwitch(rest[0]); break;
     case 'state': doState(rest[0] ?? null, rest.slice(1).join(' ')); break;
+    case 'trust': doTrust(rest); break;
     case 'init': doInit(); break;
     case 'agents': {
       const ledger = await readLedger(repoDir);
@@ -238,6 +278,7 @@ async function main(): Promise<void> {
   kala recover              after a limit hit (even outside kala)
   kala switch <agent>       hand off to <agent> now
   kala why [deadAgent]      show the taker ranking (dry run)
+  kala trust [status|revoke <path>|revoke --all]
   kala state goal|next|note|neg <text>
   kala init | kala agents`);
   }

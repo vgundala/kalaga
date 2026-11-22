@@ -7,20 +7,32 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveExecutable, claudeSessionFiles, claudeProjectDir, tailBytes } from './config.ts';
 import type { AgentConfig } from './config.ts';
 
 /** Spawn the agent with full TTY and the handoff prompt as initial prompt.
  *  Blocks until it exits; returns its exit code.
- *  Trust flags (cursor --trust) skip the per-dir "trust this workspace"
- *  prompt. Most agents take a positional prompt; agy requires -i <prompt>. */
-export function runAgent(agent: AgentConfig, repoDir: string, initialPrompt: string | null): Promise<number> {
-  const args = [...agent.interactive, ...agent.trustFlags];
+ *  SEC-001 T4/T5: trustFlags appended only when `trust` is true (a recorded
+ *  path grant). Never unconditional.
+ *  SEC-001 B3: argv[0] is the once-resolved absolute path; a missing binary
+ *  fails clearly instead of a raw spawn error.
+ *  Most agents take a positional prompt; agy requires -i <prompt>. */
+export function runAgent(agent: AgentConfig, repoDir: string, initialPrompt: string | null, trust = false): Promise<number> {
+  const resolved = resolveExecutable(agent.interactive[0]);
+  if (!resolved) {
+    return new Promise((resolve) => {
+      console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);
+      resolve(127);
+    });
+  }
+  const trustArgs = trust && agent.trustFlags.length ? agent.trustFlags : [];
+  const argv = [resolved, ...trustArgs];
   if (initialPrompt) {
-    if (agent.promptPrefix) args.push(agent.promptPrefix, initialPrompt);
-    else args.push(initialPrompt);
+    if (agent.promptPrefix) argv.push(agent.promptPrefix, initialPrompt);
+    else argv.push(initialPrompt);
   }
   return new Promise<number>((resolve) => {
-    const child = spawn(args[0], args.slice(1), { cwd: repoDir, stdio: 'inherit', env: process.env });
+    const child = spawn(argv[0], argv.slice(1), { cwd: repoDir, stdio: 'inherit', env: process.env });
     child.on('error', (e) => { console.error(`kalaga: failed to start ${agent.key}: ${e.message}`); resolve(127); });
     child.on('close', (code) => resolve(code ?? 0));
   });
@@ -46,14 +58,10 @@ function tailFile(p: string): string {
 export async function lastSessionText(agent: AgentConfig, repoDir: string): Promise<string> {
   switch (agent.key) {
     case 'claude': {
-      const escaped = repoDir.replace(/[^a-zA-Z0-9]/g, '-');
-      const dir = path.join(os.homedir(), '.claude', 'projects', escaped);
-      try {
-        const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
-        if (!files.length) return '';
-        files.sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs);
-        return tailFile(path.join(dir, files[0]));
-      } catch { return ''; }
+      // C3: shared claudeProjectDir/claudeSessionFiles (same C2 disambig as the ledger).
+      const files = claudeSessionFiles(repoDir);
+      if (!files.length) return '';
+      return tailFile(path.join(claudeProjectDir(repoDir), files[0]));
     }
     case 'grok': {
       try {
