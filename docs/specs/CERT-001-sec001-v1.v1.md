@@ -88,12 +88,12 @@ Builder claimed 19 automated checks; **no `testdata/` or test script is checked 
 
 | ID | Reason | Follow-up |
 |----|--------|-----------|
-| **W1 / T2** | Expired grants ignored (security intent). Prune-on-read writeback not implemented. | Optional hygiene in SEC-001 v2 or small FEAT |
-| **W2 / P4** | Hint is visible before taker **launch**, but after picker. Spec text required before picker. | Trivial move of `nextStepHint` above `pick()` |
-| **W3 / R2** | Ledger walk capped; trap/session cursor walk in `launch.ts` still unbounded. | Cap the same way in `lastSessionText` cursor branch |
-| **W4 / M3** | `$KALA_HOME` honored in code; README never names the env var. | OPS-001 / README one-liner |
+| **W1 / T2** | Expired grants ignored (security intent). Prune-on-read writeback not implemented. | **Cleared** in OPS-001 v2 (CERT-003) — prune-on-write |
+| **W2 / P4** | Hint is visible before taker **launch**, but after picker. Spec text required before picker. | **Cleared** in OPS-001 v2 (CERT-003) — hint before `pick()` in `offerHandoff` |
+| **W3 / R2** | Ledger walk capped; trap/session cursor walk in `launch.ts` still unbounded. | **Cleared** in OPS-001 v2 (CERT-003) — shared `CURSOR_META_SCAN_CAP` |
+| **W4 / M3** | `$KALA_HOME` honored in code; README never names the env var. | **Cleared** in OPS-001 v2 (CERT-003) — README documents `$KALA_HOME` |
 
-None of these reopen the High trust/state/limit findings.
+Original certify verdict remains `pass-with-waivers` (historical). Open audit findings from that certify are now closed; see CERT-003.
 
 ---
 

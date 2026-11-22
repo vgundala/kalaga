@@ -4,55 +4,76 @@
 |-------|-------|
 | **ID** | CERT-003 |
 | **Version** | v1 |
-| **Certifies** | [`OPS-001-share-readiness.v2.md`](OPS-001-share-readiness.v2.md) (v2, locked) |
-| **Built under** | ARCH-001 v1; SEC-001 v1 (done) |
+| **Status** | `final` |
 | **Date** | 2026-11-22 |
-| **Verdict** | `pass` — **pending TL sign-off** (builder-filled) |
+| **Certifier** | Technical lead |
+| **Builder** | (prior agent build) |
+| **Spec under test** | OPS-001 v2 → [`OPS-001-share-readiness.v2.md`](OPS-001-share-readiness.v2.md) |
+| **Also constrained by** | ARCH-001 v1; SEC-001 v1 (done) |
+| **Tree** | `/home/vinay/Code/playground/kalaga` @ **0.3.1** |
 
 ---
 
-## 1. Verdict table
+## 1. Verdict
 
-| ID | Verdict | Note |
-|----|---------|------|
+**Final verdict: `pass`**
+
+All O1–O9 `met`. CERT-001 waivers W1–W4 are **cleared** by this build (see §2).
+
+---
+
+## 2. Requirement matrix
+
+| ID | Result | Evidence |
+|----|--------|----------|
 | O1 | met | `LICENSE` — MIT, "Kalaga contributors" |
-| O2 | met | README complete; **`$KALA_HOME` documented** (W4 cleared) |
-| O3 | met | `version` 0.3.1, `engines.node >=24`, zero `dependencies` |
-| O4 | met | `CHANGELOG.md` with 0.1.0 / 0.2.0 / 0.3.0 / 0.3.1 entries |
-| O5 | met | `tests/run.ts` on `npm test` — 20 stdlib-only checks, all required helpers covered, isolated `$HOME`/`$KALA_HOME` under `os.tmpdir()`, no network |
-| O6 (W1/T2) | met | expired grants pruned in `recordTrustGrant`/`revokeTrust` write paths; `trustStatus` still lists them marked `(EXPIRED)` (tested) |
-| O7 (W2/P4) | met | `nextStepHint` printed before `pick()` in `offerHandoff`; duplicate pre-launch hint removed |
-| O8 (W3/R2) | met | `lastSessionText` cursor walk bounded by shared `CURSOR_META_SCAN_CAP` (exported from config.ts, single source) |
-| O9 | met | INDEX: SEC-001 done, FEAT-001 certify, OPS-001 v1 superseded, v2 tracking build |
+| O2 | met | README: install, Node ≥ 24, trust, residuals, `.kala/`, tiered loop, **`$KALA_HOME`** (W4) |
+| O3 | met | `package.json` `0.3.1`, `engines.node >=24`, no `dependencies` |
+| O4 | met | `CHANGELOG.md` — 0.1.0 / 0.2.0 / 0.3.0 / 0.3.1 |
+| O5 | met | `npm test` → `tests/run.ts` — **20/20 pass** (TL re-ran) |
+| O6 (W1/T2) | met | `recordTrustGrant` / `revokeTrust` filter `!isExpired` before write; `trustStatus` marks `(EXPIRED)` without pruning on read |
+| O7 (W2/P4) | met | `offerHandoff`: `nextStepHint(state)` **before** `pick()` |
+| O8 (W3/R2) | met | `launch.ts` + `ledger.ts` both use exported `CURSOR_META_SCAN_CAP` from `config.ts` |
+| O9 | met | INDEX tracks SEC done, FEAT certify→done (this session), OPS v1 superseded, v2 done |
 
-## 2. Waiver closures (for CERT-001 follow-up column)
+### Waiver closures (CERT-001 follow-up)
 
-| Waiver | Status after this build |
-|--------|------------------------|
-| W1 / T2 | **cleared** — prune-on-write (record + revoke) |
-| W2 / P4 | **cleared** — hint before picker |
-| W3 / R2 | **cleared** — trap cursor walk capped, shared constant |
+| Waiver | Status |
+|--------|--------|
+| W1 / T2 | **cleared** — prune-on-write |
+| W2 / P4 | **cleared** — hint before picker in `offerHandoff` |
+| W3 / R2 | **cleared** — shared cursor scan cap in trap walk |
 | W4 / M3 | **cleared** — `$KALA_HOME` in README |
 
-No re-waivers requested.
+---
 
-## 3. Evidence
+## 3. Verification
 
-- **Automated:** `npm test` → 20/20 pass (sanitize, inject, classifyExit
-  truth table, scanChunk honesty, claude dir + disambiguation, copy-on-load,
-  binary resolve, symlink refuse, atomic/0600, trust record/prune/status/revoke).
-- **Suite hygiene:** runs against a throwaway `$HOME`/`$KALA_HOME` in
-  `os.tmpdir()`, removed on exit — never touches the user's real
-  `~/.claude`, `~/.kala`, or `~/.cursor`.
+| Check | TL result |
+|-------|-----------|
+| `npm test` | **20/20 pass** |
+| LICENSE / CHANGELOG / version | **Pass** (file review) |
+| W1–W4 code paths | **Pass** (grep + trust/launch/index review) |
+| ARCH A6 (no runtime deps) | **Pass** |
 
-## 4. Residuals
+---
 
-- Live vendor-CLI behaviors (real quota hits, TTY prompts) remain
-  manual/live-only checks — not coverable by the stdlib suite.
-- FEAT-001 v1 still awaits TL sign-off (CERT-002); this cert does not touch it.
+## 4. Waivers
 
-## 5. Sign-off
+None. No re-waivers.
 
-- [x] Builder: all requirements `met`; INDEX moved to `certify`
-- [ ] TL/PO: confirm verdict `pass` → INDEX `done`; optionally flip
-  CERT-001 W1–W4 follow-ups to "cleared in OPS-001 v2 (CERT-003)"
+---
+
+## 5. Residuals
+
+- Live vendor-CLI / real quota exhaustion remain manual.
+- CI wiring deferred (stdlib `npm test` is the bar per OPS §5).
+- FEAT-001 certified separately in CERT-002 (same session).
+
+---
+
+## 6. Certifier notes
+
+Share bar for early adopters is met at **0.3.1**: clone + symlink, documented trust/`$KALA_HOME`, MIT, changelog, green zero-dep tests, no open CERT-001 audit waivers.
+
+**Sign-off:** TL confirms **`pass`**. INDEX → OPS-001 v2 `done`. Update CERT-001 follow-ups to cleared.

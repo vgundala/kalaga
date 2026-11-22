@@ -131,6 +131,13 @@ export function exactFor(agent: AgentConfig): boolean {
   return agent.store.kind === 'jsonl' || agent.store.kind === 'sqlite';
 }
 
+/** FEAT-002: the captured session token for one agent (ledger discovery),
+ *  or null when nothing is known (e.g. agy). */
+export async function sessionHintFor(agent: AgentConfig, repoDir: string): Promise<string | null> {
+  const u = await TAILERS[agent.key](repoDir);
+  return u.sessionHint;
+}
+
 export async function readLedger(repoDir: string): Promise<AgentUsage[]> {
   const agents = loadAgents();
   const results = await Promise.all(AGENT_ORDER.map(async (key) => {

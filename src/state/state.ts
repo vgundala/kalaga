@@ -7,6 +7,11 @@ import path from 'node:path';
 import { stateFile } from '../config.ts';
 import { toYaml } from '../util/yaml.ts';
 
+export interface SessionRecord {
+  id: string;        // vendor-native resume token (Claude: uuid, no .jsonl)
+  at: string;        // ISO when captured
+}
+
 export interface HandoffState {
   goal: string;
   status: 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED';
@@ -17,6 +22,8 @@ export interface HandoffState {
   negative_constraints: string[];
   next_step: string;
   notes: string;                 // rolling free-form "where things stand"
+  /** FEAT-002 R1: captured vendor session ids, per agent (last write wins). */
+  sessions: Record<string, SessionRecord | undefined>;
   // provenance, kept for debugging the handoff, not shown to agents
   _source?: 'tailer' | 'live-ask' | 'manual';
 }
@@ -32,8 +39,43 @@ export function blankState(repoDir: string, branch: string | null): HandoffState
     negative_constraints: [],
     next_step: 'read the repo, then ask the user what to do',
     notes: '',
+    sessions: {},
     _source: 'manual',
   };
+}
+
+/** FEAT-002 R1/R3: persist a captured session id for one agent. Last write
+ *  wins; returns the updated state. */
+export function captureSession(repoDir: string, agent: string, id: string): HandoffState {
+  const cur = loadState(repoDir) ?? blankState(repoDir, null);
+  const next: HandoffState = { ...cur, updated: new Date().toISOString(), _source: cur._source ?? 'tailer' };
+  next.sessions = { ...cur.sessions, [agent]: { id, at: new Date().toISOString() } };
+  saveState(repoDir, next);
+  return next;
+}
+
+/** FEAT-002 R1: parse the nested `sessions:` map (one level under agents).
+ *  Tolerant: bad lines are skipped, not fatal. */
+function parseSessions(raw: string): Record<string, SessionRecord | undefined> {
+  const out: Record<string, SessionRecord | undefined> = {};
+  let inSessions = false;
+  let agent: string | null = null;
+  for (const line of raw.split('\n')) {
+    if (/^\s*#/.test(line) || !line.trim()) continue;
+    if (/^sessions:\s*$/.test(line)) { inSessions = true; agent = null; continue; }
+    if (/^[a-z_]+:/i.test(line) && !line.startsWith(' ')) { inSessions = false; agent = null; continue; }
+    if (!inSessions) continue;
+    const am = line.match(/^  ([a-z]+):\s*$/);
+    if (am) { agent = am[1]; out[agent] = undefined; continue; }
+    const kv = agent && line.match(/^    (id|at):\s*(.+)$/);
+    if (kv) {
+      out[agent] = { ...(out[agent] ?? { id: '', at: '' }), [kv[1]]: kv[2].replace(/^"|"$/g, '') };
+      if (out[agent]!.id && out[agent]!.at) {
+        // keep as is; a later line for the same agent would overwrite
+      }
+    }
+  }
+  return out;
 }
 
 /** Naive but robust YAML reader for the subset we write. Good enough for our
@@ -69,6 +111,7 @@ export function loadState(repoDir: string): HandoffState | null {
       negative_constraints: lists.negative_constraints,
       next_step: top.next_step ?? '',
       notes: top.notes ?? '',
+      sessions: parseSessions(raw),
     };
     if (!s.goal) return null;
     return s;
@@ -98,6 +141,9 @@ export function saveState(repoDir: string, s: HandoffState): void {
   }
   const clean = { ...s };
   delete (clean as { _source?: string })._source;
+  // FEAT-002 R1: emit sessions as a nested map (drop undefined entries).
+  const sessions: Record<string, { id: string; at: string }> = {};
+  for (const [k, v] of Object.entries(s.sessions ?? {})) if (v?.id && v?.at) sessions[k] = v;
   let out = `# kalaga handoff state — read this before acting.\n`;
   out += `# written by: ${s._source ?? 'kalaga'} at ${s.updated}\n`;
   out += toYaml({
@@ -110,6 +156,7 @@ export function saveState(repoDir: string, s: HandoffState): void {
     negative_constraints: s.negative_constraints,
     next_step: s.next_step,
     notes: s.notes,
+    sessions,
   });
   const tmp = path.join(dir, `.${path.basename(f)}.${process.pid}.tmp`);
   fs.writeFileSync(tmp, out, { mode: 0o600 });

@@ -20,12 +20,13 @@ import process from 'node:process';
 import { loadAgents, agentFor } from './config.ts';
 import type { AgentConfig } from './config.ts';
 import { readLedger } from './ledger.ts';
-import { loadState, mergeState, blankState, saveState } from './state/state.ts';
+import { loadState, mergeState, blankState, saveState, captureSession } from './state/state.ts';
 import type { HandoffState } from './state/state.ts';
 import { currentBranch, modifiedFiles, gitSummary } from './state/git.ts';
 import { rankTakers, isFresh } from './router.ts';
 import { pick } from './picker.ts';
-import { runAgent, lastSessionText } from './launch.ts';
+import { runAgent, lastSessionText, normalizeSessionId, resumeAgent, sessionFresh } from './launch.ts';
+import { sessionHintFor } from './ledger.ts';
 import { scanChunk, classifyExit } from './trap.ts';
 import { promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
 import { handoffInject, nextStepHint, injectRichPrompt } from './prompt.ts';
@@ -69,6 +70,16 @@ async function printWhy(dead: string | null): Promise<void> {
   });
 }
 
+/** FEAT-002 R3/R4: persist the agent's current session id (if discoverable)
+ *  into state. Never invents ids (R5); best-effort, never fatal. */
+async function captureFor(agentKey: string): Promise<void> {
+  try {
+    const cfg = agentFor(agentKey);
+    const hint = await sessionHintFor(cfg, repoDir);
+    if (hint) captureSession(repoDir, agentKey, normalizeSessionId(cfg, hint));
+  } catch { /* capture is best-effort */ }
+}
+
 /** Refresh the warm state from git facts + the agent's own session tail. */
 async function refreshState(deadKey: string | null): Promise<HandoffState> {
   let text = '';
@@ -93,6 +104,7 @@ async function refreshState(deadKey: string | null): Promise<HandoffState> {
       ? { negative_constraints: [...cur.negative_constraints, limitNote] }
       : {}),
   }, 'tailer');
+  if (deadKey) await captureFor(deadKey); // R4: capture the dead agent's session
 }
 
 /** SEC-001 T4/T6/T7: resolve whether to pass trustFlags for this launch.
@@ -113,7 +125,14 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   const choice = await pick(recs, ledger, deadKey ?? 'none');
   if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   if (choice.wait) {
-    console.error(`kalaga: staying put — will reset; rerun kala run ${deadKey} later.`);
+    // R13: wait row → one-line resume hint when a fresh session was captured.
+    const st = loadState(repoDir);
+    const rec = st?.sessions?.[deadKey!];
+    if (rec?.id && (await sessionFresh(agentFor(deadKey!), repoDir, rec))) {
+      console.error(`kalaga: when the window resets → kala resume ${deadKey}`);
+    } else {
+      console.error(`kalaga: staying put — will reset; rerun kala run ${deadKey} later.`);
+    }
     return;
   }
   const next = agentFor(choice.agent);
@@ -155,6 +174,7 @@ async function confirmAssumeLimit(deadKey: string, exitCode: number): Promise<bo
  *             Enter/q = back to shell. No auto-launch on a non-limit exit (A5).
  *  E9: whatever this flow does is the last action of this invocation. */
 async function afterExit(agentKey: string, exitCode: number): Promise<void> {
+  await captureFor(agentKey); // R3: capture before classifying (never changes tiers)
   const cfg = agentFor(agentKey);
   const tail = (await lastSessionText(cfg, repoDir)).slice(-4000);
   const hit = tail ? scanChunk(tail, cfg, exitCode) : null;
@@ -269,7 +289,33 @@ async function doSwitch(agentKey: string): Promise<void> {
   await refreshState(null);
   const owned = mergeState(repoDir, { owner: agent.key });
   const trust = await resolveTrust(agent);
-  await runAgent(agent, repoDir, handoffInject(owned, injectRichPrompt()), trust);
+  const exitCode = await runAgent(agent, repoDir, handoffInject(owned, injectRichPrompt()), trust);
+  await captureFor(agent.key); // §3.4(2): light capture-only refresh after switch
+  void exitCode;
+}
+
+/** FEAT-002 R9/R10/R11/R12: kala resume [agent]. */
+async function doResume(agentKey: string | null): Promise<void> {
+  const state = loadState(repoDir);
+  const key = agentKey ?? state?.owner ?? null;
+  if (!key) {
+    console.error('kalaga: no agent given and no owner in handoff state — usage: kala resume <agent>');
+    return;
+  }
+  const agent = agentFor(key);
+  const rec = state?.sessions?.[key];
+  if (!rec?.id) {
+    console.error(`kalaga: no captured session for ${key} — run it via kala first (kala run ${key})`);
+    return;
+  }
+  if (!(await sessionFresh(agent, repoDir, rec))) {
+    console.error(`kalaga: captured session for ${key} is stale (>7 days or artifact gone) — start fresh: kala run ${key}`);
+    return;
+  }
+  mergeState(repoDir, { owner: agent.key });
+  const trust = await resolveTrust(agent);
+  const exitCode = await resumeAgent(agent, repoDir, rec.id, trust);
+  await afterExit(agent.key, exitCode); // R11: same FEAT-001 flow as kala run
 }
 
 function doState(sub: string | null, text: string): void {
@@ -316,6 +362,7 @@ async function main(): Promise<void> {
     case 'run': if (!rest[0]) throw new Error('usage: kala run <agent>'); await doRun(rest[0]); break;
     case 'recover': await doRecover(); break;
     case 'switch': if (!rest[0]) throw new Error('usage: kala switch <agent>'); await doSwitch(rest[0]); break;
+    case 'resume': await doResume(rest[0] ?? null); break;
     case 'state': doState(rest[0] ?? null, rest.slice(1).join(' ')); break;
     case 'trust': doTrust(rest); break;
     case 'init': doInit(); break;
@@ -336,6 +383,7 @@ async function main(): Promise<void> {
   kala run <agent>          work in <agent>; on limit hit → pick a taker
   kala recover              after a limit hit (even outside kala)
   kala switch <agent>       hand off to <agent> now
+  kala resume [agent]       reopen a captured session by id (default: owner)
   kala why [deadAgent]      show the taker ranking (dry run)
   kala trust [status|revoke <path>|revoke --all]
   kala state goal|next|note|neg <text>

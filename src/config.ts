@@ -16,8 +16,8 @@ export interface AgentConfig {
   promptPrefix: string;
   /** Flags to add for a non-interactive single prompt (headless). */
   headless: string[];
-  /** Flags to resume the most recent conversation for this dir. */
-  resume: string[];
+  /** FEAT-002 R6: flags that take a session id (before the id). */
+  resumeByIdPrefix: string[];
   /** Flags to skip the per-directory "trust this workspace" prompt. */
   trustFlags: string[];
   /** Per-usage-window ceiling in tokens, for the headroom/freshness estimate. */
@@ -37,7 +37,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     promptPrefix: '-i',
     trustFlags: [],
     headless: ['-p', '--output-format', 'text'],
-    resume: ['--continue'],
+    resumeByIdPrefix: ['--conversation'],
     ceiling: 250_000,
     limitPatterns: [
       'rate.?limit', 'usage limit', 'quota', 'too many requests',
@@ -51,7 +51,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     promptPrefix: '',
     trustFlags: ['--trust'],
     headless: ['-p', '--output-format', 'text'],
-    resume: ['--continue'],
+    resumeByIdPrefix: ['--resume'],
     ceiling: 250_000,
     limitPatterns: [
       'rate.?limit', 'usage limit', 'quota', 'too many requests',
@@ -65,7 +65,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     promptPrefix: '',
     trustFlags: [],
     headless: ['-p', '--output-format', 'plain'],
-    resume: ['--continue'],
+    resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
     limitPatterns: [
       'rate.?limit', 'usage limit', 'quota', 'too many requests',
@@ -79,7 +79,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     promptPrefix: '',
     trustFlags: [],
     headless: ['-p', '--output-format', 'text'],
-    resume: ['--continue'],
+    resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
     limitPatterns: [
       'rate.?limit', 'usage limit', 'quota', 'too many requests',

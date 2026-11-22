@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | OPS-001 |
 | **Version** | v2 |
-| **Status** | `locked` |
+| **Status** | `done` (CERT-003 pass) |
 | **Date** | 2026-11-22 |
 | **Supersedes** | OPS-001 v1 (draft, framed as "v0.2 share bar") |
 | **Owner** | Technical lead |

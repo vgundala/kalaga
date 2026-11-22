@@ -32,6 +32,7 @@ const { classifyExit, scanChunk } = await import(`${SRC}/trap.ts`);
 const cfg = await import(`${SRC}/config.ts`);
 const state = await import(`${SRC}/state/state.ts`);
 const trust = await import(`${SRC}/trust.ts`);
+const launch = await import(`${SRC}/launch.ts`);
 
 section('sanitize / inject (P2/P3)');
 await test('strips C0 controls + DEL, keeps \\n \\t', () => {
@@ -139,6 +140,45 @@ await test('revoke --all clears', () => {
   trust.recordTrustGrant(repoDir);
   trust.revokeTrust(null, true);
   assert.strictEqual(trust.hasTrustGrant(repoDir), false);
+});
+
+section('session capture + resume (FEAT-002)');
+await test('R2: normalizeSessionId strips claude .jsonl only', () => {
+  assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.claude, 'abc-123.jsonl'), 'abc-123');
+  assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.grok, 'sid-xyz'), 'sid-xyz');
+});
+await test('R6/R7: resumeArgv matches verified vendor prefixes', () => {
+  assert.deepStrictEqual(launch.resumeArgv(cfg.AGENTS.claude, 'ID'), ['-r', 'ID']);
+  assert.deepStrictEqual(launch.resumeArgv(cfg.AGENTS.cursor, 'ID'), ['--resume', 'ID']);
+  assert.deepStrictEqual(launch.resumeArgv(cfg.AGENTS.grok, 'ID'), ['-r', 'ID']);
+  assert.deepStrictEqual(launch.resumeArgv(cfg.AGENTS.agy, 'ID'), ['--conversation', 'ID']);
+});
+await test('R10: sessionFresh rejects at > 7 days', async () => {
+  const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+  const recent = new Date(Date.now() - 3_600_000).toISOString();
+  const repo = path.join(ROOT, 'fresh-repo');
+  fs.mkdirSync(repo, { recursive: true });
+  const dir = cfg.claudeProjectDir(repo);
+  fs.mkdirSync(dir, { recursive: true });
+  assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.claude, repo, { id: 'x1', at: old }), false);
+  fs.writeFileSync(path.join(dir, 'x2.jsonl'), '{}');
+  assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.claude, repo, { id: 'x2', at: recent }), true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+await test('R1: sessions round-trip through save/load', () => {
+  const r = path.join(ROOT, 'sess-repo');
+  const s = state.blankState(r, null);
+  s.sessions = { claude: { id: 'uuid-1', at: new Date().toISOString() } };
+  state.saveState(r, s);
+  const back = state.loadState(r);
+  assert.strictEqual(back?.sessions.claude?.id, 'uuid-1');
+});
+await test('R14: session id never in default inject', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.sessions = { claude: { id: 'SECRETID', at: new Date().toISOString() } };
+  s.owner = 'claude';
+  assert.ok(!handoffInject(s, false).includes('SECRETID'));
+  assert.ok(!handoffInject(s, true).includes('SECRETID'));
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

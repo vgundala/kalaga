@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 — 2026-11-22
+
+FEAT-002 v1 (session capture + resume):
+
+- Captures each agent's session id as it runs (Claude jsonl name, Grok
+  `session_id`, Cursor chat dir) into `.kala/state.yaml`
+  (`sessions.<agent>.{id,at}`); never invents ids.
+- `kala resume [agent]` reopens a captured conversation by id (claude/grok
+  `-r`, cursor `--resume`, agy `--conversation` when known) — no handoff
+  inject, full context preserved. Freshness gate: ≤7 days + vendor artifact
+  exists where checkable.
+- Limit-picker "wait for reset" row now prints `kala resume <dead>` when a
+  fresh session was captured.
+- Structured `resumeByIdPrefix` config replaces the misleading flat
+  `--continue` stub.
+- `npm test`: +5 cases (normalize, resume argv, freshness reject, state
+  round-trip, id-not-in-inject).
+
 ## 0.3.1 — 2026-11-22
 
 OPS-001 v2 (share readiness):

@@ -22,6 +22,7 @@ kala run <agent>          # work in <agent>; on limit hit → pick a taker
 kala recover              # after a limit hit (works even if the agent was
                           # launched directly, not via kala)
 kala switch <agent>       # hand off to <agent> now
+kala resume [agent]       # reopen a captured session by id (default: owner)
 kala why [deadAgent]      # show the taker ranking (dry run)
 kala state goal|next|note|neg <text>   # edit the handoff state by hand
 kala trust                # list trust grants
@@ -61,6 +62,22 @@ Every agent launched via bare `kala` or `kala run` is followed by a
 `q` (or `e`) always returns to your shell without launching. A clean exit
 is never classified as a limit hit, and nothing is ever launched on a clean
 exit unless you type a number — so a deliberate `/exit` costs one keypress.
+
+### Resuming after a quota reset
+
+Kala captures each agent's session id as it runs (Claude jsonl name, Grok
+`session_id`, Cursor chat dir) and stores it in `.kala/state.yaml`. After a
+limit hit, picking the `wait for reset` row prints:
+
+```
+kalaga: when the window resets → kala resume claude
+```
+
+`kala resume <agent>` (or bare `kala resume` for the current owner) reopens
+the **same conversation** by id — full context, no token spend re-deriving
+it. A session is usable for 7 days while its vendor artifact exists. `agy`
+has no discoverable session store yet: `kala resume agy` tells you to run it
+via kala first (nothing is invented).
 
 ## How it works
 
