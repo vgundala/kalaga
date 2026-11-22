@@ -33,6 +33,7 @@ const cfg = await import(`${SRC}/config.ts`);
 const state = await import(`${SRC}/state/state.ts`);
 const trust = await import(`${SRC}/trust.ts`);
 const launch = await import(`${SRC}/launch.ts`);
+const liveask = await import(`${SRC}/liveask.ts`);
 
 section('sanitize / inject (P2/P3)');
 await test('strips C0 controls + DEL, keeps \\n \\t', () => {
@@ -42,15 +43,31 @@ await test('truncates with … at cap', () => {
   const out = sanitizeHandoffField('x'.repeat(600), 500);
   assert.strictEqual(out.length, 500); assert.ok(out.endsWith('…'));
 });
-await test('default inject hides goal (pointer + next only)', () => {
+await test('FEAT-003: default inject is protocol mode (Goal/Done/Next + standing orders)', () => {
   const s = state.blankState('/tmp/x', null);
-  s.goal = 'SECRET'; s.next_step = 'do it'; s.owner = 'claude';
+  s.goal = 'ship the CLI'; s.next_step = 'do it'; s.owner = 'claude';
+  s.done = ['landed auth', 'landed tests'];
   const inj = handoffInject(s, false);
-  assert.ok(inj.includes('Read .kala/state.yaml') && inj.includes('do it') && !inj.includes('SECRET'));
+  assert.ok(inj.includes('Read .kala/state.yaml'), 'pointer');
+  assert.ok(inj.includes('Goal: ship the CLI'), 'goal');
+  assert.ok(inj.includes('Done: landed auth') && inj.includes('Done: landed tests'), 'done bullets');
+  assert.ok(inj.includes('Next step: do it'), 'next');
+  assert.ok(inj.includes('Maintain .kala/state.yaml'), 'standing orders');
 });
-await test('rich inject includes goal', () => {
-  const s = state.blankState('/tmp/x', null); s.goal = 'SECRET';
-  assert.ok(handoffInject(s, true).includes('SECRET'));
+await test('FEAT-003: protocol inject sanitizes + caps done list (12 × 300)', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.done = Array.from({ length: 20 }, (_, i) => `item${i}:${'x'.repeat(400)}`);
+  const inj = handoffInject(s, false);
+  assert.ok(!inj.includes('item7:'), 'oldest 8 dropped (keep newest 12)');
+  assert.ok(inj.includes('item8:'), 'newest-12 boundary kept');
+  assert.ok(inj.includes('item19:'), 'newest kept');
+  assert.ok(!inj.includes('x'.repeat(301)), 'per-item cap enforced');
+});
+await test('FEAT-003: rich inject adds modified files + context', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.goal = 'SECRET'; s.modified_files = ['a.ts']; s.notes = 'where things stand';
+  const inj = handoffInject(s, true);
+  assert.ok(inj.includes('SECRET') && inj.includes('Modified files: a.ts') && inj.includes('Context: where things stand'));
 });
 
 section('classifyExit / scanChunk (E2, L1)');
@@ -179,6 +196,60 @@ await test('R14: session id never in default inject', () => {
   s.owner = 'claude';
   assert.ok(!handoffInject(s, false).includes('SECRETID'));
   assert.ok(!handoffInject(s, true).includes('SECRETID'));
+});
+
+section('FEAT-003: thin state / live-ask / done');
+await test('H5: isThinState(blank) → true', () => {
+  assert.strictEqual(state.isThinState(state.blankState('/tmp/x', null)), true);
+});
+await test('H5: isThinState(rich) → false', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.goal = 'ship the kalaga CLI handoff';
+  s.done = ['landed protocol inject'];
+  s.next_step = 'run the test suite';
+  assert.strictEqual(state.isThinState(s), false);
+});
+await test('H11: live-ask parser accepts a fixture YAML fragment', () => {
+  const raw = [
+    '```yaml',
+    'goal: ship the kalaga CLI handoff',
+    'done:',
+    '  - landed protocol inject',
+    '  - landed live-ask',
+    'next_step: run the test suite',
+    'notes: all green locally',
+    'negative_constraints:',
+    '  - do not pipe the TTY',
+    '```',
+  ].join('\n');
+  const p = liveask.parseLiveAskYaml(raw);
+  assert.strictEqual(p.goal, 'ship the kalaga CLI handoff');
+  assert.deepStrictEqual(p.done, ['landed protocol inject', 'landed live-ask']);
+  assert.strictEqual(p.next_step, 'run the test suite');
+  assert.strictEqual(p.notes, 'all green locally');
+  assert.deepStrictEqual(p.negative_constraints, ['do not pipe the TTY']);
+});
+await test('H11: live-ask parser ignores unknown keys + garbage', () => {
+  const p = liveask.parseLiveAskYaml('apology: sorry\ngoal: just this\nsome random line\n');
+  assert.strictEqual(p.goal, 'just this');
+  assert.ok(!('notes' in p) && !('done' in p));
+});
+await test('H1/H9: done append + cap (12, drop oldest) round-trips', () => {
+  const r = path.join(ROOT, 'done-repo');
+  state.saveState(r, state.blankState(r, null));
+  for (let i = 1; i <= 15; i++) {
+    const s = state.loadState(r)!;
+    state.saveState(r, { ...s, done: [...s.done, `bullet ${i}`].slice(-12), updated: new Date().toISOString() });
+  }
+  const back = state.loadState(r)!;
+  assert.strictEqual(back.done.length, 12);
+  assert.strictEqual(back.done[0], 'bullet 4');
+  assert.strictEqual(back.done[11], 'bullet 15');
+});
+await test('H8: liveAskArgv uses headless flags, no TTY', () => {
+  const argv = liveask.liveAskArgv(cfg.AGENTS.claude, 'PROMPT');
+  assert.deepStrictEqual(argv.slice(0, -1), cfg.AGENTS.claude.headless);
+  assert.strictEqual(argv[argv.length - 1], 'PROMPT');
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

@@ -24,7 +24,7 @@ kala recover              # after a limit hit (works even if the agent was
 kala switch <agent>       # hand off to <agent> now
 kala resume [agent]       # reopen a captured session by id (default: owner)
 kala why [deadAgent]      # show the taker ranking (dry run)
-kala state goal|next|note|neg <text>   # edit the handoff state by hand
+kala state goal|next|note|neg|done <text>  # edit the handoff state by hand
 kala trust                # list trust grants
 kala trust revoke <path>  # drop one grant (or: kala trust revoke --all)
 kala agents               # list known agent keys
@@ -79,6 +79,49 @@ it. A session is usable for 7 days while its vendor artifact exists. `agy`
 has no discoverable session store yet: `kala resume agy` tells you to run it
 via kala first (nothing is invented).
 
+## The handoff protocol (`.kala/state.yaml`)
+
+State is the contract between agents. Every agent Kalaga launches is told
+(standing orders) to **update the file before it stops or hits a limit**:
+
+| Field | Meaning | Who writes it |
+|-------|---------|---------------|
+| `goal` | why this work exists | human / agent / live-ask |
+| `done` | bullets of what already landed (≤12 × 300 chars) | agent / live-ask / `kala state done` |
+| `next_step` | one concrete next action | agent / live-ask / human |
+| `negative_constraints` | failures not to repeat (≤20 × 200 chars) | agent / limit note / human |
+| `notes` | short "where things stand" | agent / git seed / live-ask |
+| `modified_files` | git porcelain | Kalaga (tailer) |
+| `sessions` | captured session ids (FEAT-002) | Kalaga (capture path) |
+
+**Protocol inject.** Every cross-agent launch (handoff picker, clean-tier
+handoff, `kala switch`) opens with: pointer to read `.kala/state.yaml`,
+`Goal:`, `Done:` bullets, `Next step:`, `Avoid:`, and the standing orders —
+all sanitized and length-capped. `inject_rich_prompt: true` in
+`~/.kala/config.yaml` adds `Context:` (notes) + modified files. `kala
+resume` deliberately injects nothing — the conversation already has context.
+
+*Amends SEC-001 P3:* the handoff default is no longer "pointer + next step
+only" — it is the protocol inject above. Security behavior (sanitize, caps,
+no raw field leakage) is unchanged; only the coverage is broader.
+
+**Live-ask.** At a limit handoff (and `kala switch`), before the picker
+launches anything, Kalaga asks the dying agent one headless print-mode
+question: "reply with ONLY a YAML block with keys goal, done, next_step,
+notes, negative_constraints". It parses the answer, sanitizes it, and merges
+it (`_source: live-ask`). Timeout 45s, piped stdio (never TTY), and it
+**fails soft** — a timeout, error, or empty answer just keeps the existing
+state and the handoff proceeds. Budget note: this spends a little of the
+dying agent's remaining quota; that is intentional and the whole point.
+
+**Thin-state warning.** Before a cross-agent launch, if `goal` is
+uncaptured, `done` is empty with short notes, or `next_step` is the blank
+default, Kalaga prints `kalaga: handoff state looks thin — taker may drift`
+and continues. `kala switch <agent> --strict-state` aborts instead.
+
+**Manual edits:** `kala state done "shipped X"` appends a bullet;
+`kala status` shows the done count + first bullet.
+
 ## How it works
 
 - **`.kala/state.yaml`** — the single source of truth for handoff (goal,
@@ -127,10 +170,12 @@ its phrase there.
   (default 30d, `trust_ttl_days:` in config) prompts again. Manage with
   `kala trust` / `kala trust revoke [path|--all]`.
 - **Handoff state is an instruction surface.** `.kala/state.yaml` can be
-  written by any agent (or a hostile repo), so every field is sanitized
-  (ASCII controls stripped, length-capped) before it enters the receiving
-  agent's prompt, and the default inject is just a pointer + next step.
-  **Gitignore `.kala/`** and never put secrets in the state.
+  written by any agent (or a hostile repo), so every field — scalars and
+  list items alike — is sanitized (ASCII controls stripped, length-capped:
+  goal 1000, next_step 500, notes 2000, done 12×300, negatives 20×200)
+  before it enters the receiving agent's prompt. The default handoff inject
+  is the protocol inject (see above), still fully sanitized. **Gitignore
+  `.kala/`** and never put secrets in the state.
 - **State writes never follow symlinks.** `.kala` must be a real directory
   and `state.yaml` a real file; writes go to a temp file + atomic rename at
   mode `0600`.

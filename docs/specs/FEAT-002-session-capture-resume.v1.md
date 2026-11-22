@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | FEAT-002 |
 | **Version** | v1 |
-| **Status** | `locked` |
+| **Status** | `done` (CERT-004 pass-with-waivers) |
 | **Date** | 2026-11-22 |
 | **Supersedes** | — |
 | **Owner** | Technical lead |

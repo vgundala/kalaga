@@ -17,10 +17,10 @@
 // Agents are addressed by key everywhere else.
 import path from 'node:path';
 import process from 'node:process';
-import { loadAgents, agentFor } from './config.ts';
+import { loadAgents, agentFor, isInstalled } from './config.ts';
 import type { AgentConfig } from './config.ts';
 import { readLedger } from './ledger.ts';
-import { loadState, mergeState, blankState, saveState, captureSession } from './state/state.ts';
+import { loadState, mergeState, blankState, saveState, captureSession, isThinState } from './state/state.ts';
 import type { HandoffState } from './state/state.ts';
 import { currentBranch, modifiedFiles, gitSummary } from './state/git.ts';
 import { rankTakers, isFresh } from './router.ts';
@@ -29,7 +29,8 @@ import { runAgent, lastSessionText, normalizeSessionId, resumeAgent, sessionFres
 import { sessionHintFor } from './ledger.ts';
 import { scanChunk, classifyExit } from './trap.ts';
 import { promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
-import { handoffInject, nextStepHint, injectRichPrompt } from './prompt.ts';
+import { handoffInject, nextStepHint, injectRichPrompt, STANDING_ORDERS, FIELD_MAX } from './prompt.ts';
+import { liveAskAndMerge } from './liveask.ts';
 
 const repoDir = process.cwd();
 
@@ -52,6 +53,8 @@ async function printStatus(): Promise<void> {
     console.log('');
     console.log(`  handoff: ${state.status} · owner=${state.owner ?? '—'} · ${state.modified_files.length} files · updated ${state.updated.slice(0, 16).replace('T', ' ')}`);
     console.log(`  goal: ${state.goal.slice(0, 80)}${state.goal.length > 80 ? '…' : ''}`);
+    const d0 = state.done[0] ? ` — ${state.done[0].slice(0, 60)}${state.done[0].length > 60 ? '…' : ''}` : '';
+    console.log(`  done: ${state.done.length ? `${state.done.length}${d0}` : '—'}`);
     console.log(`  next: ${state.next_step.slice(0, 80)}`);
   } else {
     console.log('');
@@ -95,6 +98,7 @@ async function refreshState(deadKey: string | null): Promise<HandoffState> {
   // next agent knows why we're here. Deduped so repeated refreshes don't
   // stack identical constraints.
   const limitNote = hit && deadKey ? `${deadKey} limit hit: ${hit.line}`.slice(0, 200) : null;
+  if (deadKey) await captureFor(deadKey); // R4/W1: capture BEFORE returning (was dead code after return)
   return mergeState(repoDir, {
     modified_files: modifiedFiles(repoDir),
     branch: currentBranch(repoDir),
@@ -104,7 +108,6 @@ async function refreshState(deadKey: string | null): Promise<HandoffState> {
       ? { negative_constraints: [...cur.negative_constraints, limitNote] }
       : {}),
   }, 'tailer');
-  if (deadKey) await captureFor(deadKey); // R4: capture the dead agent's session
 }
 
 /** SEC-001 T4/T6/T7: resolve whether to pass trustFlags for this launch.
@@ -116,7 +119,11 @@ async function resolveTrust(agent: AgentConfig): Promise<boolean> {
 }
 
 async function offerHandoff(deadKey: string | null): Promise<void> {
-  const state = await refreshState(deadKey);
+  await refreshState(deadKey);
+  // H6: live-ask the dying agent for a structured state update BEFORE the
+  // picker (fail soft — a failed ask just keeps the refreshed state).
+  if (deadKey) await liveAskAndMerge(agentFor(deadKey), repoDir);
+  const state = loadState(repoDir) ?? blankState(repoDir, null);
   const ledger = await readLedger(repoDir);
   const recs = rankTakers(ledger, deadKey, state.owner ?? null);
   if (!recs.length) { console.error('kalaga: no agents to take over.'); return; }
@@ -136,6 +143,10 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
     return;
   }
   const next = agentFor(choice.agent);
+  // H5: thin-state warn on a CROSS-agent launch (taker ≠ the dying/owner).
+  if (choice.agent !== deadKey && choice.agent !== state.owner && isThinState(state)) {
+    console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
+  }
   const st = mergeState(repoDir, { owner: next.key }, 'tailer');
   const trust = await resolveTrust(next);
   console.error(`kalaga → handing off to ${next.key}`);
@@ -201,6 +212,9 @@ async function afterExit(agentKey: string, exitCode: number): Promise<void> {
   });
   if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   const next = agentFor(choice.agent);
+  if (choice.agent !== st.owner && isThinState(st)) {
+    console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
+  }
   const st2 = mergeState(repoDir, { owner: next.key });
   console.error(`  ${nextStepHint(st2)}`);
   const trust = await resolveTrust(next);
@@ -229,6 +243,7 @@ async function doStart(): Promise<void> {
   const fresh = st.goal.startsWith('not captured');
   const trust = await resolveTrust(next);
   console.error(`kalaga → starting ${next.key}`);
+  if (fresh) console.error(`kalaga: ${STANDING_ORDERS} Set goal + next_step (kala state goal "…" / kala state next "…").`);
   const exitCode = await runAgent(next, repoDir, fresh ? null : handoffInject(st, injectRichPrompt()), trust);
   await afterExit(next.key, exitCode);
 }
@@ -239,6 +254,7 @@ async function doRun(agentKey: string): Promise<void> {
   mergeState(repoDir, { owner: agent.key });
   const fresh = loadState(repoDir);
   const trust = await resolveTrust(agent);
+  if (fresh?.goal.startsWith('not captured')) console.error(`kalaga: ${STANDING_ORDERS} Set goal + next_step (kala state goal "…" / kala state next "…").`);
   const exitCode = await runAgent(agent, repoDir, fresh?.goal.startsWith('not captured') ? null : handoffInject(fresh!, injectRichPrompt()), trust);
   // FEAT-001: tiered post-exit flow (SEC-001 L1 still holds — a clean exit
   // is never classified as a limit hit; it just gets a stay-default menu).
@@ -286,7 +302,23 @@ async function doRecover(): Promise<void> {
 
 async function doSwitch(agentKey: string): Promise<void> {
   const agent = agentFor(agentKey);
-  await refreshState(null);
+  const pre = await refreshState(null);
+  // H7: live-ask the PREVIOUS owner (or most-recent session agent) before we
+  // hand off — only if it's installed and distinct from the target.
+  const prev = pre.owner ?? Object.keys(pre.sessions).sort((a, b) =>
+    (pre.sessions[b]?.at ?? '').localeCompare(pre.sessions[a]?.at ?? ''))[0] ?? null;
+  if (prev && prev !== agentKey && isInstalled(agentFor(prev))) {
+    await liveAskAndMerge(agentFor(prev), repoDir);
+  }
+  // H5: thin-state warn (or --strict-state aborts) on a cross-agent switch.
+  const after = loadState(repoDir) ?? pre;
+  if (isThinState(after)) {
+    if (process.argv.includes('--strict-state')) {
+      console.error('kalaga: state is thin and --strict-state was set — refusing to switch. Enrich first: kala state …');
+      return;
+    }
+    console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
+  }
   const owned = mergeState(repoDir, { owner: agent.key });
   const trust = await resolveTrust(agent);
   const exitCode = await runAgent(agent, repoDir, handoffInject(owned, injectRichPrompt()), trust);
@@ -326,6 +358,10 @@ function doState(sub: string | null, text: string): void {
     case 'next': mergeState(repoDir, { next_step: text }, 'manual'); break;
     case 'note': mergeState(repoDir, { notes: text }, 'manual'); break;
     case 'neg': mergeState(repoDir, { negative_constraints: [...s.negative_constraints, text] }, 'manual'); break;
+    case 'done': { // H9: append one bullet; cap at 12 (drop oldest) per H2
+      const next = [...s.done, text].slice(-FIELD_MAX.doneItems);
+      mergeState(repoDir, { done: next }, 'manual'); break;
+    }
     default: console.error(`unknown state subcommand: ${sub}`); process.exit(1);
   }
   console.error(`kalaga: state updated (${sub})`);
@@ -386,7 +422,7 @@ async function main(): Promise<void> {
   kala resume [agent]       reopen a captured session by id (default: owner)
   kala why [deadAgent]      show the taker ranking (dry run)
   kala trust [status|revoke <path>|revoke --all]
-  kala state goal|next|note|neg <text>
+  kala state goal|next|note|neg|done <text>
   kala init | kala agents`);
   }
 }

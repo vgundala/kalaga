@@ -22,6 +22,8 @@ export interface HandoffState {
   negative_constraints: string[];
   next_step: string;
   notes: string;                 // rolling free-form "where things stand"
+  /** FEAT-003 H1: bullets of what already landed (code, specs, decisions). */
+  done: string[];
   /** FEAT-002 R1: captured vendor session ids, per agent (last write wins). */
   sessions: Record<string, SessionRecord | undefined>;
   // provenance, kept for debugging the handoff, not shown to agents
@@ -39,9 +41,21 @@ export function blankState(repoDir: string, branch: string | null): HandoffState
     negative_constraints: [],
     next_step: 'read the repo, then ask the user what to do',
     notes: '',
+    done: [],
     sessions: {},
     _source: 'manual',
   };
+}
+
+/** FEAT-003 H5: thin = not enough grounded context for a taker to continue
+ *  without inventing a new direction. Pure. Thin when ANY of: goal blank /
+ *  "not captured" / <8 chars; done empty AND notes <40 chars; next_step is
+ *  the blank default. */
+export function isThinState(s: HandoffState): boolean {
+  if (s.goal.startsWith('not captured') || s.goal.trim().length < 8) return true;
+  if (s.done.length === 0 && s.notes.trim().length < 40) return true;
+  if (s.next_step.trim() === 'read the repo, then ask the user what to do') return true;
+  return false;
 }
 
 /** FEAT-002 R1/R3: persist a captured session id for one agent. Last write
@@ -87,7 +101,7 @@ export function loadState(repoDir: string): HandoffState | null {
   try { raw = fs.readFileSync(f, 'utf8'); } catch { return null; }
   try {
     const top: Record<string, string> = {};
-    const lists: Record<string, string[]> = { modified_files: [], negative_constraints: [] };
+    const lists: Record<string, string[]> = { modified_files: [], negative_constraints: [], done: [] };
     let cur: string | null = null;
     for (const line of raw.split('\n')) {
       if (/^\s*#/.test(line) || !line.trim()) continue;
@@ -109,6 +123,7 @@ export function loadState(repoDir: string): HandoffState | null {
       updated: top.updated ?? new Date().toISOString(),
       modified_files: lists.modified_files,
       negative_constraints: lists.negative_constraints,
+      done: lists.done,
       next_step: top.next_step ?? '',
       notes: top.notes ?? '',
       sessions: parseSessions(raw),
@@ -154,6 +169,7 @@ export function saveState(repoDir: string, s: HandoffState): void {
     updated: s.updated,
     modified_files: s.modified_files,
     negative_constraints: s.negative_constraints,
+    done: s.done,
     next_step: s.next_step,
     notes: s.notes,
     sessions,

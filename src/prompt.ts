@@ -12,7 +12,28 @@ import { homedir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import type { HandoffState } from './state/state.ts';
 
-export const FIELD_MAX = { goal: 1000, next_step: 500, notes: 2000 } as const;
+export const FIELD_MAX = {
+  goal: 1000, next_step: 500, notes: 2000,
+  // FEAT-003 H2: list-item caps (done: 12 items × 300; negatives: 20 × 200).
+  doneItem: 300, doneItems: 12, negItem: 200, negItems: 20,
+} as const;
+
+/** FEAT-003 H2: cap a list of untrusted items — trim each to `item` chars,
+ *  drop beyond `count` (keep the newest = tail). Reuses sanitizeHandoffField
+ *  for control stripping. Pure. */
+export function sanitizeHandoffList(items: string[], count: number, item: number): string[] {
+  const tail = items.slice(-count);
+  return tail.map((it) => sanitizeHandoffField(it, item));
+}
+
+/** FEAT-003 H4: fixed standing orders — not user-controlled, appended to
+ *  handoff / non-fresh launches and to the first-run stderr notice. */
+export const STANDING_ORDERS = [
+  'Maintain .kala/state.yaml as you work. Before you stop or hit a limit, update:',
+  'goal, done (bullets of what landed), next_step (one action), notes, and',
+  'negative_constraints (failures not to repeat). The next agent will only see',
+  'that file plus a short inject.',
+].join(' ');
 
 /** P2: strip C0 controls (keep \n \t) + DEL, cap length, truncate with ….
  *  Removes 0x00–0x08, 0x0B–0x1F (incl. CR), and 0x7F. Pure, unit-testable. */
@@ -30,26 +51,31 @@ export function injectRichPrompt(): boolean {
   } catch { return false; }
 }
 
-/** P3: default inject = pointer + next step only (short, low blast radius).
- *  Rich inject (goal/files/negatives/notes) only when `rich` (config
- *  inject_rich_prompt: true). */
+/** FEAT-003 H3/H4 — amends SEC-001 P3: the default handoff inject is now
+ *  PROTOCOL mode (pointer + goal + done + next + avoid + standing orders),
+ *  still sanitized + capped. `rich` (config inject_rich_prompt: true) adds
+ *  notes + modified files on top. Resume launches stay inject-free (FEAT-002). */
 export function handoffInject(s: HandoffState, rich = false): string {
   const st: HandoffState = {
     ...s,
     goal: sanitizeHandoffField(s.goal, FIELD_MAX.goal),
     next_step: sanitizeHandoffField(s.next_step, FIELD_MAX.next_step),
     notes: sanitizeHandoffField(s.notes, FIELD_MAX.notes),
+    done: sanitizeHandoffList(s.done, FIELD_MAX.doneItems, FIELD_MAX.doneItem),
+    negative_constraints: sanitizeHandoffList(s.negative_constraints, FIELD_MAX.negItems, FIELD_MAX.negItem),
   };
   const base = `Kalaga handoff from ${st.owner ?? 'another agent'}. Read .kala/state.yaml in the project root before doing anything.`;
-  if (!rich) return `${base} Next step: ${st.next_step}`;
-  return [
+  const lines = [
     base,
     `Goal: ${st.goal}`,
-    st.modified_files.length ? `Modified files: ${st.modified_files.join(', ')}` : '',
-    st.negative_constraints.length ? `DO NOT repeat (already failed): ${st.negative_constraints.join(' | ')}` : '',
+    st.done.length ? st.done.map((d) => `Done: ${d}`).join('\n') : '',
     `Next step: ${st.next_step}`,
-    st.notes ? `Context: ${st.notes}` : '',
-  ].filter(Boolean).join('\n');
+    st.negative_constraints.length ? `Avoid: ${st.negative_constraints.join(' | ')}` : '',
+    rich && st.modified_files.length ? `Modified files: ${st.modified_files.join(', ')}` : '',
+    rich && st.notes ? `Context: ${st.notes}` : '',
+    STANDING_ORDERS,
+  ].filter(Boolean);
+  return lines.join('\n');
 }
 
 /** P4: one-line continuation hint for stderr before the picker. */

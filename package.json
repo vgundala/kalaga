@@ -1,6 +1,6 @@
 {
   "name": "kalaga",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "One CLI to route your agent work across agy / cursor / grok / claude, with seamless handoff when a session limit hits.",
   "type": "module",
   "bin": {

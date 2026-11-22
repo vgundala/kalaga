@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.0 — 2026-11-22
+
+FEAT-003 v1 (handoff state protocol + seam enrichment):
+
+- New `done: []` in `.kala/state.yaml` — shared bullets of what already
+  landed, readable/writable by every CLI (agent, live-ask, or
+  `kala state done <text>`). Capped at 12 items × 300 chars (drop oldest).
+- Protocol inject is now the **default** for all handoff launches (amends
+  SEC-001 P3 for handoffs only, still sanitized + capped): pointer +
+  `Goal:` + `Done:` bullets + `Next step:` + `Avoid:` + standing orders.
+  `inject_rich_prompt: true` adds `Context:` + modified files. Resume stays
+  inject-free (FEAT-002).
+- Standing orders: every launch is told to keep `.kala/state.yaml` current
+  before stopping; first-run (uncaptured) launches print them on stderr with
+  a "set goal/next_step" nudge.
+- Live-ask: on a limit handoff or `kala switch`, Kalaga asks the dying agent
+  (headless print mode, piped stdio, 45s timeout, never `shell: true`) for a
+  YAML state update, sanitizes it, and merges it as `_source: live-ask`.
+  Fail-soft — a failed/timeout ask just keeps the existing state.
+- Thin-state warning before a cross-agent launch when goal/done/next look
+  blank (`kalaga: handoff state looks thin — taker may drift`);
+  `kala switch <agent> --strict-state` aborts instead.
+- `kala status` shows the `done` count + first bullet.
+- Fixed CERT-004 W1/R4: `refreshState` now captures the dead agent's session
+  **before** returning (the old call was unreachable dead code), so
+  `kala recover` → handoff captures a resumable session.
+- `npm test`: 32 checks (was 25) — protocol inject shape, list caps,
+  `isThinState`, live-ask YAML parser fixtures, `done` append + cap,
+  live-ask argv.
+
 ## 0.4.0 — 2026-11-22
 
 FEAT-002 v1 (session capture + resume):

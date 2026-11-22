@@ -4,65 +4,81 @@
 |-------|-------|
 | **ID** | CERT-004 |
 | **Version** | v1 |
-| **Certifies** | [`FEAT-002-session-capture-resume.v1.md`](FEAT-002-session-capture-resume.v1.md) (v1, locked) |
-| **Built under** | ARCH-001 v1 + SEC-001 v1 + FEAT-001 v1 (all done) |
+| **Status** | `final` |
 | **Date** | 2026-11-22 |
-| **Verdict** | `pass` — **pending TL sign-off** (builder-filled) |
+| **Certifier** | Technical lead |
+| **Builder** | (prior agent build) |
+| **Spec under test** | FEAT-002 v1 → [`FEAT-002-session-capture-resume.v1.md`](FEAT-002-session-capture-resume.v1.md) |
+| **Also constrained by** | ARCH-001 v1; SEC-001 v1; FEAT-001 v1 |
+| **Tree** | `/home/vinay/Code/playground/kalaga` @ **0.4.0** |
 
 ---
 
-## 1. Verdict table
+## 1. Verdict
 
-| ID | Verdict | Note |
-|----|---------|------|
-| R1 | met | `HandoffState.sessions: Record<agent, {id,at}>`; nested `sessions:` emitted by `toYaml`, parsed by `parseSessions` (round-trip tested) |
-| R2 | met | `normalizeSessionId`: claude `.jsonl` stripped; other agents passthrough (tested) |
-| R3 | met | `captureFor` at the top of `afterExit` (before classification — tiers untouched) |
-| R4 | met | `refreshState(deadKey)` captures the dead agent when a hint exists |
-| R5 | met | capture only when `sessionHint` non-null; agy stays null (tested: `resume agy` → clear error) |
-| R6 | met | `resume: string[]` replaced by `resumeByIdPrefix: string[]` in `AgentConfig` |
-| R7 | met | claude `-r`, cursor `--resume`, grok `-r`, agy `--conversation` (argv assembly tested) |
-| R8 | met | `resumeAgent`: resolved binary + conditional trustFlags + resume prefix + id; **no** handoff inject |
-| R9 | met | `kala resume [agent]` — default = state owner; per §3.5 case table |
-| R10 | met | `sessionFresh`: ≤7 days AND claude jsonl exists / cursor dir best-effort / grok sqlite row best-effort (fail-open); stale tested |
-| R11 | met | resume child exit → FEAT-001 `afterExit` |
-| R12 | met | `kala resume` in help + README section |
-| R13 | met | wait row prints `kala resume <dead>` when a fresh session exists (verified via limit menu) |
-| R14 | met | session ids never in default or rich inject (tested) |
-| R15 | met | `npm test` +5 FEAT-002 cases (25/25 total) |
-| R16 | met | package 0.4.0; CHANGELOG entry citing FEAT-002 |
+**Final verdict: `pass-with-waivers`**
 
-## 2. Evidence
+Core capture + `kala resume` + wait-hint + tests + docs are met. One requirement
+(**R4**) is only partially met due to unreachable code in `refreshState` (see §4).
 
-- **Automated:** `npm test` → 25/25 pass, incl. normalize, resume argv for all
-  four agents, freshness reject (>7d) + accept (artifact exists), state
-  round-trip, id-exclusion from inject.
-- **Manual (stub CLIs, isolated KALA_HOME):**
-  - bare `kala` → claude → clean exit → `sessions.claude.id` present in
-    `.kala/state.yaml`.
-  - `kala resume claude` → stub argv proved `-r <uuid>`, then FEAT-001
-    afterExit flow ran.
-  - `kala resume agy` (no capture) → `no captured session for agy — run it
-    via kala first`.
-  - stale `at` (8d) → `captured session for claude is stale`.
-  - limit menu → `0` wait → `kalaga: when the window resets → kala resume
-    claude` (verified via `kala recover` limit path, which shares the
-    `offerHandoff` wait branch).
+---
 
-## 3. Waivers
+## 2. Requirement matrix
 
-None.
+| ID | Result | Evidence |
+|----|--------|----------|
+| R1 | met | `HandoffState.sessions`; nested YAML save/load; round-trip in `npm test` |
+| R2 | met | `normalizeSessionId` strips `.jsonl` for claude only |
+| R3 | met | `afterExit` → `captureFor` before classify |
+| R4 | partial | Intended `captureFor` in `refreshState` sits **after** `return mergeState(...)` — dead code. Recover → `offerHandoff` → `refreshState(dead)` therefore does **not** capture. Main `kala run` path still captures via R3. |
+| R5 | met | capture only when `sessionHint` non-null |
+| R6 | met | `resumeByIdPrefix` replaces flat `resume` stub |
+| R7 | met | claude `-r`, cursor `--resume`, grok `-r`, agy `--conversation` |
+| R8 | met | `resumeAgent`: resolved bin + trust + prefix + id; no inject |
+| R9 | met | `kala resume [agent]`; default owner |
+| R10 | met | 7-day TTL + claude exists; cursor/grok best-effort; stale message clear |
+| R11 | met | resume → `afterExit` |
+| R12 | met | help + README |
+| R13 | met | wait branch prints `kala resume <dead>` when fresh |
+| R14 | met | inject tests — no session id |
+| R15 | met | FEAT-002 cases in suite |
+| R16 | met | `0.4.0` + CHANGELOG |
 
-## 4. Residuals / notes
+---
 
-- agy resume is capture-null until store discovery (spec §3.2 — expected).
-- grok sqlite freshness check runs `grok usage`-style exec only in the
-  ledger; the freshness row check is read-only sqlite, fail-open on error.
-- Real vendor `--resume` behavior (claude/grok) not re-probed against live
-  sessions this session — flags per spec §3.2 were TL-verified on this
-  machine 2026-11-22.
+## 3. Verification
 
-## 5. Sign-off
+| Check | TL result |
+|-------|-----------|
+| `npm test` | **25/25 pass** (re-ran) |
+| Version / CHANGELOG / README resume | **Pass** |
+| R3 afterExit capture | **Pass** (code review) |
+| R4 refreshState capture | **Fail path** — unreachable; waived |
+| ARCH A4/A5/A6 | **Pass** |
 
-- [x] Builder: all requirements `met`; INDEX moved to `certify`
-- [ ] TL/PO: confirm verdict `pass` → INDEX `done`
+Live vendor resume not re-probed this session; flags match FEAT-002 §3.2 (previously verified on-machine).
+
+---
+
+## 4. Waivers
+
+| ID | Reason | Follow-up |
+|----|--------|-----------|
+| **W1 / R4** | `refreshState` returns before `await captureFor(deadKey)`, so R4’s refresh/recover capture never runs. `kala run` / bare `kala` still capture via `afterExit` (R3). `kala switch` has its own `captureFor`. | One-line fix: call `captureFor` **before** `return mergeState` (or after merge, before return). Land as FEAT-002 v1 patch / tiny follow-up before or with FEAT-003. |
+
+---
+
+## 5. Residuals
+
+- agy: no discoverable id (expected)  
+- Cursor freshness fail-open if walk inconclusive (spec-allowed)  
+- Real `--resume` against live vendor sessions: builder stub-verified; not re-run by TL  
+
+---
+
+## 6. Certifier notes
+
+Feature is shippable for the primary loop (run → capture → resume → wait hint).
+Do **not** treat `kala recover` alone as guaranteeing a captured session until W1 is fixed.
+
+**Sign-off:** TL confirms **`pass-with-waivers`**. INDEX → FEAT-002 v1 `done`.
