@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveExecutable, claudeSessionFiles, claudeProjectDir, tailBytes } from './config.ts';
+import { resolveExecutable, claudeSessionFiles, claudeProjectDir, tailBytes, CURSOR_META_SCAN_CAP } from './config.ts';
 import type { AgentConfig } from './config.ts';
 
 /** Spawn the agent with full TTY and the handoff prompt as initial prompt.
@@ -75,13 +75,17 @@ export async function lastSessionText(agent: AgentConfig, repoDir: string): Prom
     case 'cursor': {
       const root = path.join(os.homedir(), '.cursor', 'chats');
       try {
-        let bestDir: string | null = null; let bestM = 0;
+        let bestDir: string | null = null; let bestM = 0; let scanned = 0;
+        // O8 (W3): bounded by the shared CURSOR_META_SCAN_CAP, like the ledger.
         for (const outer of fs.readdirSync(root)) {
+          if (scanned >= CURSOR_META_SCAN_CAP) break;
           const od = path.join(root, outer);
           if (!fs.statSync(od).isDirectory()) continue;
           for (const chat of fs.readdirSync(od)) {
+            if (scanned >= CURSOR_META_SCAN_CAP) break;
             const metaPath = path.join(od, chat, 'meta.json');
             if (!fs.existsSync(metaPath)) continue;
+            scanned++;
             try {
               const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
               if (meta.cwd !== repoDir || !meta.hasConversation) continue;

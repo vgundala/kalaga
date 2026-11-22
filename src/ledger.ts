@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { loadAgents, AGENT_ORDER, isInstalled, claudeSessionFiles, claudeProjectDir, tailBytes, USAGE_MAX_BYTES } from './config.ts';
+import { loadAgents, AGENT_ORDER, isInstalled, claudeSessionFiles, claudeProjectDir, tailBytes, USAGE_MAX_BYTES, CURSOR_META_SCAN_CAP } from './config.ts';
 import type { AgentKey, AgentConfig } from './config.ts';
 
 export interface AgentUsage {
@@ -84,9 +84,9 @@ async function grokUsage(repoDir: string): Promise<{ tokens: number; lastUsed: n
 }
 
 // ---------- cursor: estimate from ~/.cursor/chats/**/meta.json (cwd match) ----------
-// R2: bounded walk — cap the number of meta.json files inspected so a machine
-// with thousands of chats doesn't make `kala status` slow.
-const CURSOR_META_SCAN_CAP = 2000;
+// R2/O8: bounded walk — CURSOR_META_SCAN_CAP (config.ts, shared with the trap)
+// caps meta.json files inspected so a machine with thousands of chats doesn't
+// make `kala status` slow.
 function cursorUsage(repoDir: string): { tokens: number; lastUsed: number | null; sessionHint: string | null } {
   const root = path.join(os.homedir(), '.cursor', 'chats');
   let best: { tokens: number; mtime: number; hint: string } | null = null;

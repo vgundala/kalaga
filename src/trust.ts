@@ -95,13 +95,16 @@ export function hasTrustGrant(repoDir: string): boolean {
   return readGrants().some((g) => g.path === real && !isExpired(g));
 }
 
-/** T3: record/refresh a grant for this realpath with the configured TTL. */
+/** T3 + O6 (W1): record/refresh a grant for this realpath with the
+ *  configured TTL. Prunes expired grants on the way back to disk so the
+ *  store doesn't accumulate dead entries; `trust status` still shows
+ *  expiries from the pre-write read. */
 export function recordTrustGrant(repoDir: string): void {
   let real: string;
   try { real = fs.realpathSync(repoDir); } catch { throw new Error(`cannot resolve path for trust grant: ${repoDir}`); }
   const now = new Date();
   const expires = new Date(now.getTime() + trustTtlDays() * 86_400_000);
-  const grants = readGrants().filter((g) => g.path !== real); // upsert
+  const grants = readGrants().filter((g) => g.path !== real && !isExpired(g));
   grants.push({ path: real, granted_at: now.toISOString(), expires_at: expires.toISOString() });
   writeGrants(grants);
 }
@@ -111,9 +114,10 @@ export function trustStatus(): TrustGrant[] {
   return readGrants().map((g) => ({ ...g, expires_at: isExpired(g) ? g.expires_at + ' (EXPIRED)' : g.expires_at }));
 }
 
-/** T8: `kala trust revoke [path]` or `--all`. */
+/** T8 + O6 (W1): `kala trust revoke [path]` or `--all`. Prunes expired
+ *  grants on the write path, same as record. */
 export function revokeTrust(target: string | null, all: boolean): void {
-  let grants = readGrants();
+  let grants = readGrants().filter((g) => !isExpired(g));
   if (all) grants = [];
   else if (target) {
     let real: string;

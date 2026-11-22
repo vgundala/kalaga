@@ -94,6 +94,10 @@ export const AGENT_ORDER: AgentKey[] = ['agy', 'cursor', 'grok', 'claude'];
 // Tokens remaining before the bottom bar starts warning.
 export const WARN_THRESHOLD = 15_000;
 
+// OPS-001 O8 (W3/R2): max cursor meta.json files inspected per walk — shared
+// by the ledger (usage) and the trap (session tail) so neither is unbounded.
+export const CURSOR_META_SCAN_CAP = 2000;
+
 export interface KalagaConfig {
   agents: Record<string, Partial<AgentConfig> & { ceiling?: number }>;
 }

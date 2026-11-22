@@ -1,6 +1,6 @@
 {
   "name": "kalaga",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "One CLI to route your agent work across agy / cursor / grok / claude, with seamless handoff when a session limit hits.",
   "type": "module",
   "bin": {
@@ -8,7 +8,8 @@
   },
   "scripts": {
     "status": "node src/index.ts status",
-    "why": "node src/index.ts why"
+    "why": "node src/index.ts why",
+    "test": "node tests/run.ts"
   },
   "engines": {
     "node": ">=24"

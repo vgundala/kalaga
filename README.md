@@ -81,7 +81,11 @@ exit unless you type a number — so a deliberate `/exit` costs one keypress.
 
 ## Config
 
-`~/.kala/config.yaml` (optional) — override token ceilings used for the
+`~/.kala/` holds all per-user state: `config.yaml`, `trust.yaml`. Override
+the location with **`$KALA_HOME`** (e.g. `KALA_HOME=~/.config/kala kala
+status`) — useful for testing or multi-account machines.
+
+`config.yaml` (optional) — override token ceilings used for the
 headroom/freshness estimate:
 
 ```yaml

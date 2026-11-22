@@ -108,6 +108,8 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   const ledger = await readLedger(repoDir);
   const recs = rankTakers(ledger, deadKey, state.owner ?? null);
   if (!recs.length) { console.error('kalaga: no agents to take over.'); return; }
+  // P4 (O7/W2): one-line continuation hint BEFORE the picker (non-blocking).
+  console.error(`  ${nextStepHint(state)}`);
   const choice = await pick(recs, ledger, deadKey ?? 'none');
   if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   if (choice.wait) {
@@ -116,8 +118,6 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   }
   const next = agentFor(choice.agent);
   const st = mergeState(repoDir, { owner: next.key }, 'tailer');
-  // P4: one-line continuation hint on stderr before the launch (non-blocking).
-  console.error(`  ${nextStepHint(st)}`);
   const trust = await resolveTrust(next);
   console.error(`kalaga → handing off to ${next.key}`);
   await runAgent(next, repoDir, handoffInject(st, injectRichPrompt()), trust);
