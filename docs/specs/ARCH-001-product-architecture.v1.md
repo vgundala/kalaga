@@ -13,7 +13,7 @@
 
 ## 1. Intent
 
-Kalaga (`kala`) is a **local, zero-dependency CLI** that routes interactive agent work across **agy / cursor / grok / claude**. When one agent hits a usage limit, Kalaga detects that from the vendor’s own session store, keeps a shared handoff file warm, and lets the user pick the next agent with one keypress.
+Kalaga (`kala`) is a **local, zero-dependency CLI** that routes interactive agent work across **agy / cursor / grok / claude**. The name is Telugu for a mix / blending: the product mixes capacity across installed CLIs without replacing them. When one agent hits a usage limit, Kalaga detects that from the vendor’s own session store, keeps a shared handoff file warm, and lets the user pick the next agent with one keypress.
 
 This spec freezes the architecture so builders harden and extend without redesigning the product.
 

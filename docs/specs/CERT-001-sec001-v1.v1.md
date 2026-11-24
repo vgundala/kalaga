@@ -10,7 +10,7 @@
 | **Builder** | (prior agent build; package `0.2.0`) |
 | **Spec under test** | SEC-001 v1 → [`SEC-001-security-remediation.v1.md`](SEC-001-security-remediation.v1.md) |
 | **Also constrained by** | ARCH-001 v1 |
-| **Tree** | `/home/vinay/Code/playground/kalaga` @ package version **0.2.0** |
+| **Tree** | `kalaga` (repo root) @ package version **0.2.0** |
 
 ---
 

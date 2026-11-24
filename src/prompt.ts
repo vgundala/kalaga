@@ -16,6 +16,8 @@ export const FIELD_MAX = {
   goal: 1000, next_step: 500, notes: 2000,
   // FEAT-003 H2: list-item caps (done: 12 items × 300; negatives: 20 × 200).
   doneItem: 300, doneItems: 12, negItem: 200, negItems: 20,
+  // Rich inject only: path strings from git / YAML — same control strip + cap.
+  pathItem: 260, pathItems: 40,
 } as const;
 
 /** FEAT-003 H2: cap a list of untrusted items — trim each to `item` chars,
@@ -63,6 +65,7 @@ export function handoffInject(s: HandoffState, rich = false): string {
     notes: sanitizeHandoffField(s.notes, FIELD_MAX.notes),
     done: sanitizeHandoffList(s.done, FIELD_MAX.doneItems, FIELD_MAX.doneItem),
     negative_constraints: sanitizeHandoffList(s.negative_constraints, FIELD_MAX.negItems, FIELD_MAX.negItem),
+    modified_files: sanitizeHandoffList(s.modified_files, FIELD_MAX.pathItems, FIELD_MAX.pathItem),
   };
   const base = `Kalaga handoff from ${st.owner ?? 'another agent'}. Read .kala/state.yaml in the project root before doing anything.`;
   const lines = [

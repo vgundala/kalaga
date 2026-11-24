@@ -4,55 +4,81 @@
 |-------|-------|
 | **ID** | CERT-005 |
 | **Version** | v1 |
+| **Status** | `final` |
 | **Date** | 2026-11-22 |
-| **Verdict** | `pass` — **pending TL sign-off** (builder-filled) |
+| **Certifier** | Technical lead |
+| **Builder** | (prior agent build) |
 | **Spec under test** | FEAT-003 v1 → [`FEAT-003-handoff-state-protocol.v1.md`](FEAT-003-handoff-state-protocol.v1.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1; FEAT-001 v1; FEAT-002 v1 |
-| **Tree** | `/home/vinay/Code/playground/kalaga` @ **0.5.0** |
-| **Folded in** | CERT-004 **W1/R4** — `refreshState` `captureFor` dead code (one-line fix) |
+| **Tree** | `kalaga` (repo root) @ **0.5.0** |
+| **Also closes** | CERT-004 **W1/R4** (`refreshState` capture before return) |
 
 ---
 
-## 1. Requirement matrix
+## 1. Verdict
 
-| ID | Verdict | Evidence |
-|----|---------|----------|
-| H1 | met | `done: string[]` in `HandoffState`; blank `[]`; emitted as a YAML list by `toYaml` (same style as `modified_files`); read by `loadState`'s list parser. Round-trip tested (15 appends → 12 kept, oldest dropped). |
-| H2 | met | `FIELD_MAX` extended (`doneItem: 300, doneItems: 12, negItem: 200, negItems: 20`); new `sanitizeHandoffList(items, count, item)` reuses `sanitizeHandoffField`; inject test asserts oldest 8 of 20 dropped and per-item cap (no 301-char run survives). |
-| H3 | met | `handoffInject` is now protocol mode by default: pointer + `Goal:` + `Done:` bullets + `Next step:` + `Avoid:` + standing orders. All handoff call sites (`offerHandoff`, clean-tier, `doStart`/`doRun` non-fresh, `doSwitch`) already route through it. `resumeAgent` still passes no inject (FEAT-002 R8 unchanged; R14 test still green). |
-| H4 | met | `STANDING_ORDERS` constant (verbatim §3.3 text) appended to every protocol inject; first-run (uncaptured) launches print it on stderr with a "set goal/next_step" nudge instead of an argv prompt (§3.3 preferred option — documented here). |
-| H5 | met | `isThinState(s)` pure in `state.ts` (goal "not captured"/<8 chars; done empty AND notes <40; blank-default next_step). Warned on cross-agent launch in `offerHandoff` (picker) and clean-tier branch; `kala switch` warns or aborts under `--strict-state`. |
-| H6 | met | `offerHandoff` now: `refreshState(dead)` → `liveAskAndMerge(agentFor(dead))` → picker. Merge is `_source: 'live-ask'`; failure/timeout/empty → stderr warn, existing state kept, handoff proceeds (fail soft). |
-| H7 | met | `doSwitch` live-asks the previous owner (or most-recent captured session agent) when installed and distinct from the target; skips when no owner/sessions. |
-| H8 | met | `runLiveAsk`: `spawn(resolved, [...headless, prompt])`, `stdio: ['ignore','pipe','ignore']` (never TTY, never `shell: true`), 45s `LIVE_ASK_TIMEOUT_MS` SIGKILL. `liveAskArgv` tested against config headless flags. |
-| H9 | met | `kala state done <text>` appends (cap 12, drop oldest); `kala status` prints `done: <n> — <first bullet>`. |
-| H10 | met | README: "The handoff protocol" section — field table, protocol inject description, live-ask note + budget honesty, thin-state warning + `--strict-state`, manual edits. |
-| H11 | met | New tests: `isThinState` blank/rich, live-ask YAML fixture parse (fenced + lists + unknown-key rejection), `done` append+cap round-trip, protocol inject shape + caps, `liveAskArgv`. Suite **32/32** (was 25). |
-| H12 | met | `package.json` 0.5.0; CHANGELOG 0.5.0 entry citing FEAT-003. |
-| H13 | met | SEC-001 P3 amendment documented: README "Amends SEC-001 P3" note + Security section updated (sanitize/caps still hold; default handoff inject broadened from pointer+next to protocol mode). |
-| W1/R4 (CERT-004) | met | `refreshState`: `if (deadKey) await captureFor(deadKey);` moved **before** `return mergeState(...)` — recover path now captures the dead agent's session. |
+**Final verdict: `pass`**
 
-## 2. Verification
+All H1–H13 `met`. CERT-004 W1 formally closed. No waivers.
 
-- **Automated:** `npm test` → **32/32 pass** (re-ran).
-- **Smoke:** `node src/index.ts agents` and bare `kala` startup run clean (picker
-  exits on EOF as expected in non-TTY); state round-trips with `done` present.
-- **Manual (pending TL):** live-ask against a real/stub agent, thin-state
-  warning on blank state, `--strict-state` abort, cross-agent taker citing
-  `done` — see FEAT-003 §6 manual checklist.
+---
 
-## 3. Constraints
+## 2. Requirement matrix
 
-ARCH A4/A5/A6 held (no shell spawn, no auto-launch on clean exit, store-based
-trap unchanged). No new runtime deps. SEC sanitize/symlink/atomic state I/O
-untouched (S1–S4 tests still green).
+| ID | Result | Evidence |
+|----|--------|----------|
+| H1 | met | `done: string[]`; YAML list; round-trip in suite |
+| H2 | met | `sanitizeHandoffList` + caps 12×300 / 20×200 |
+| H3 | met | Default `handoffInject` = protocol mode; resume inject-free |
+| H4 | met | `STANDING_ORDERS` in inject; first-run stderr nudge |
+| H5 | met | `isThinState`; warn on cross-agent; `--strict-state` abort |
+| H6 | met | `liveAskAndMerge` before picker in `offerHandoff`; fail soft |
+| H7 | met | `doSwitch` live-asks prior owner when distinct + installed |
+| H8 | met | headless argv, piped stdio, 45s kill; no `shell: true` |
+| H9 | met | `kala state done`; status `done: N — …` |
+| H10 | met | README protocol section |
+| H11 | met | Suite FEAT-003 block |
+| H12 | met | `0.5.0` + CHANGELOG |
+| H13 | met | README “Amends SEC-001 P3” |
+| CERT-004 W1/R4 | met | `captureFor(deadKey)` **before** `return mergeState` in `refreshState` |
 
-## 4. Residuals
+---
 
-- Live-ask quality depends on vendor CLI print-mode compliance; a non-compliant
-  answer simply fails soft. Vendor-specific prompt tuning is out of scope (v2).
-- `--strict-state` is opt-in (spec-deferred default-on).
-- Live-ask timeout fixed at 45s (configurable later, per spec).
+## 3. Verification
 
-**Sign-off:** pending — TL certifies against FEAT-003 v1; on pass, INDEX →
-FEAT-003 `done` and CERT-004 W1 closes.
+### Automated
+
+`npm test` → **32/32 pass** (TL re-ran).
+
+### Manual (TL, isolated `$KALA_HOME` + PATH stubs)
+
+| Check | Result |
+|-------|--------|
+| Live-ask against stub `claude -p` updates `done` / `next_step` | **Pass** — merged goal `Ship FEAT-003…`, 2 done bullets, next `Certify CERT-005…` |
+| Thin warn on blank state (live-ask fail-soft) | **Pass** — `handoff state looks thin` on `kala switch cursor` |
+| `--strict-state` abort | **Pass** — `refusing to switch`; taker not launched |
+| Taker inject cites `done` / keeps goal (no invented goal) | **Pass** — cursor stub argv contained `Goal: Ship FEAT-003…`, `Done: …`, `Avoid: Do not invent…` |
+| Live-ask timeout fail-soft (bonus / §6) | **Pass** — 600ms timeout, state unchanged |
+| `kala state done` + status (bonus / §6) | **Pass** — `done: 1 — shipped X` |
+
+---
+
+## 4. Waivers
+
+None.
+
+---
+
+## 5. Residuals
+
+- Live-ask quality depends on vendor print-mode compliance (fail soft).  
+- `--strict-state` remains opt-in.  
+- Timeout fixed at 45s (production); configurable later.
+
+---
+
+## 6. Certifier notes
+
+Builder matrix matched the tree. Manual checks used stub CLIs (not live quota). Product continuity path (protocol inject + live-ask + thin warn) behaves as locked.
+
+**Sign-off:** TL confirms **`pass`**. INDEX → FEAT-003 `done`. CERT-004 W1 closed.

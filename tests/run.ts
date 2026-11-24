@@ -69,6 +69,15 @@ await test('FEAT-003: rich inject adds modified files + context', () => {
   const inj = handoffInject(s, true);
   assert.ok(inj.includes('SECRET') && inj.includes('Modified files: a.ts') && inj.includes('Context: where things stand'));
 });
+await test('SEC: rich inject sanitizes modified_files (controls + caps)', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.goal = 'g'; s.next_step = 'n';
+  s.modified_files = ['ok.ts', 'bad\x00\x07path.ts', 'x'.repeat(400)];
+  const inj = handoffInject(s, true);
+  assert.ok(!inj.includes('\x00') && !inj.includes('\x07'));
+  assert.ok(inj.includes('badpath.ts'));
+  assert.ok(inj.includes('…'));
+});
 
 section('classifyExit / scanChunk (E2, L1)');
 const hit = { matched: 'm', line: 'l', exitCode: null, agent: 'x' };
@@ -106,6 +115,11 @@ await test('resolveExecutable: absolute ok, missing → null, bare → absolute'
   assert.strictEqual(cfg.resolveExecutable('/no/such/bin-xyz'), null);
   const n = cfg.resolveExecutable('node');
   assert.ok(n && path.isAbsolute(n));
+});
+await test('OPS-003 P1/P6: splitPathEnv uses path.delimiter', () => {
+  const parts = cfg.splitPathEnv(['/a', '/b', '/c'].join(path.delimiter));
+  assert.deepStrictEqual(parts, ['/a', '/b', '/c']);
+  assert.deepStrictEqual(cfg.splitPathEnv(''), []);
 });
 
 section('safe state I/O (S1–S4)');
@@ -163,6 +177,41 @@ section('session capture + resume (FEAT-002)');
 await test('R2: normalizeSessionId strips claude .jsonl only', () => {
   assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.claude, 'abc-123.jsonl'), 'abc-123');
   assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.grok, 'sid-xyz'), 'sid-xyz');
+});
+await test('SEC: session id allowlist rejects flag-shaped / unsafe tokens', () => {
+  assert.strictEqual(launch.isValidSessionId('--print'), false);
+  assert.strictEqual(launch.isValidSessionId('-r'), false);
+  assert.strictEqual(launch.isValidSessionId(''), false);
+  assert.strictEqual(launch.isValidSessionId('a b'), false);
+  assert.strictEqual(launch.isValidSessionId('ok-uuid.1_2'), true);
+  assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.claude, '--evil.jsonl'), null);
+  assert.throws(() => launch.resumeArgv(cfg.AGENTS.claude, '--print'), /invalid session id/);
+});
+await test('SEC: poisoned sessions.id dropped on load; capture skips bad ids', () => {
+  const r = path.join(ROOT, 'poison-sess');
+  fs.mkdirSync(path.join(r, '.kala'), { recursive: true });
+  fs.writeFileSync(path.join(r, '.kala', 'state.yaml'), [
+    'goal: "x"',
+    'status: IN_PROGRESS',
+    'owner: claude',
+    'branch: null',
+    'updated: "2026-01-01T00:00:00.000Z"',
+    'modified_files: []',
+    'negative_constraints: []',
+    'next_step: "n"',
+    'notes: ""',
+    'done: []',
+    'sessions:',
+    '  claude:',
+    '    id: --print',
+    '    at: "2026-01-01T00:00:00.000Z"',
+  ].join('\n'));
+  const loaded = state.loadState(r);
+  assert.ok(!loaded?.sessions?.claude);
+  const before = state.blankState(r, null);
+  state.saveState(r, before);
+  const after = state.captureSession(r, 'claude', '--print');
+  assert.ok(!after.sessions.claude);
 });
 await test('R6/R7: resumeArgv matches verified vendor prefixes', () => {
   assert.deepStrictEqual(launch.resumeArgv(cfg.AGENTS.claude, 'ID'), ['-r', 'ID']);

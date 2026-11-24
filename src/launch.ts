@@ -9,6 +9,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveExecutable, claudeSessionFiles, claudeProjectDir, tailBytes, CURSOR_META_SCAN_CAP } from './config.ts';
 import type { AgentConfig } from './config.ts';
+import { isValidSessionId } from './util/sessionid.ts';
+
+export { isValidSessionId };
 
 /** Spawn the agent with full TTY and the handoff prompt as initial prompt.
  *  Blocks until it exits; returns its exit code.
@@ -41,14 +44,17 @@ export function runAgent(agent: AgentConfig, repoDir: string, initialPrompt: str
 // ---------- FEAT-002: session capture + resume ----------
 
 /** R2: vendor-native resume token. Claude jsonl names lose the suffix;
- *  other hints are already ids. */
-export function normalizeSessionId(agent: AgentConfig, hint: string): string {
-  return agent.key === 'claude' ? hint.replace(/\.jsonl$/, '') : hint;
+ *  other hints are already ids. Returns null if the result is not a safe id. */
+export function normalizeSessionId(agent: AgentConfig, hint: string): string | null {
+  const id = agent.key === 'claude' ? hint.replace(/\.jsonl$/, '') : hint;
+  return isValidSessionId(id) ? id : null;
 }
 
 /** R6/R7: argv for resume-by-id (prefix flags + id), trustFlags applied by
- *  the caller via the `trust` arg to resumeAgent. Pure, testable. */
+ *  the caller via the `trust` arg to resumeAgent. Pure, testable.
+ *  Caller must pass a validated id (see isValidSessionId). */
 export function resumeArgv(agent: AgentConfig, id: string): string[] {
+  if (!isValidSessionId(id)) throw new Error(`invalid session id for resume: ${JSON.stringify(id)}`);
   return [...agent.resumeByIdPrefix, id];
 }
 
@@ -90,6 +96,10 @@ export async function sessionFresh(agent: AgentConfig, repoDir: string, rec: { i
 /** R8: spawn the resolved binary with trustFlags (conditional) + resume
  *  flags + id. No handoff inject — the conversation already has context. */
 export async function resumeAgent(agent: AgentConfig, repoDir: string, id: string, trust = false): Promise<number> {
+  if (!isValidSessionId(id)) {
+    console.error(`kalaga: refusing resume — session id fails allowlist (flag-shaped or unsafe characters)`);
+    return 2;
+  }
   const resolved = resolveExecutable(agent.interactive[0]);
   if (!resolved) {
     console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);

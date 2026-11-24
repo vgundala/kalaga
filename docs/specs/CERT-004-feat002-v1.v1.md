@@ -10,7 +10,7 @@
 | **Builder** | (prior agent build) |
 | **Spec under test** | FEAT-002 v1 → [`FEAT-002-session-capture-resume.v1.md`](FEAT-002-session-capture-resume.v1.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1; FEAT-001 v1 |
-| **Tree** | `/home/vinay/Code/playground/kalaga` @ **0.4.0** |
+| **Tree** | `kalaga` (repo root) @ **0.4.0** |
 
 ---
 
@@ -64,7 +64,7 @@ Live vendor resume not re-probed this session; flags match FEAT-002 §3.2 (previ
 
 | ID | Reason | Follow-up |
 |----|--------|-----------|
-| **W1 / R4** | `refreshState` returns before `await captureFor(deadKey)`, so R4’s refresh/recover capture never runs. `kala run` / bare `kala` still capture via `afterExit` (R3). `kala switch` has its own `captureFor`. | One-line fix: call `captureFor` **before** `return mergeState` (or after merge, before return). Land as FEAT-002 v1 patch / tiny follow-up before or with FEAT-003. |
+| **W1 / R4** | `refreshState` returns before `await captureFor(deadKey)`, so R4’s refresh/recover capture never runs. `kala run` / bare `kala` still capture via `afterExit` (R3). `kala switch` has its own `captureFor`. | **Cleared** in FEAT-003 build — verified in CERT-005 (`captureFor` before `return mergeState`). |
 
 ---
 
@@ -79,6 +79,6 @@ Live vendor resume not re-probed this session; flags match FEAT-002 §3.2 (previ
 ## 6. Certifier notes
 
 Feature is shippable for the primary loop (run → capture → resume → wait hint).
-Do **not** treat `kala recover` alone as guaranteeing a captured session until W1 is fixed.
+W1/R4 later fixed in the FEAT-003 tree; recover path now captures (see CERT-005).
 
-**Sign-off:** TL confirms **`pass-with-waivers`**. INDEX → FEAT-002 v1 `done`.
+**Sign-off:** TL confirms **`pass-with-waivers`** (historical). INDEX → FEAT-002 v1 `done`. W1 closed via CERT-005.

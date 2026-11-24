@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stateFile } from '../config.ts';
+import { isValidSessionId } from '../util/sessionid.ts';
 import { toYaml } from '../util/yaml.ts';
 
 export interface SessionRecord {
@@ -59,9 +60,11 @@ export function isThinState(s: HandoffState): boolean {
 }
 
 /** FEAT-002 R1/R3: persist a captured session id for one agent. Last write
- *  wins; returns the updated state. */
+ *  wins; returns the updated state. Skips write when id fails the allowlist
+ *  (launch.isValidSessionId — resume argv must never see flag-shaped tokens). */
 export function captureSession(repoDir: string, agent: string, id: string): HandoffState {
   const cur = loadState(repoDir) ?? blankState(repoDir, null);
+  if (!isValidSessionId(id)) return cur;
   const next: HandoffState = { ...cur, updated: new Date().toISOString(), _source: cur._source ?? 'tailer' };
   next.sessions = { ...cur.sessions, [agent]: { id, at: new Date().toISOString() } };
   saveState(repoDir, next);
@@ -83,10 +86,14 @@ function parseSessions(raw: string): Record<string, SessionRecord | undefined> {
     if (am) { agent = am[1]; out[agent] = undefined; continue; }
     const kv = agent && line.match(/^    (id|at):\s*(.+)$/);
     if (kv) {
-      out[agent] = { ...(out[agent] ?? { id: '', at: '' }), [kv[1]]: kv[2].replace(/^"|"$/g, '') };
-      if (out[agent]!.id && out[agent]!.at) {
-        // keep as is; a later line for the same agent would overwrite
+      const val = kv[2].replace(/^"|"$/g, '');
+      if (kv[1] === 'id' && !isValidSessionId(val)) {
+        // Drop poisoned / flag-shaped ids — do not keep a partial record.
+        delete out[agent];
+        agent = null;
+        continue;
       }
+      out[agent] = { ...(out[agent] ?? { id: '', at: '' }), [kv[1]]: val };
     }
   }
   return out;

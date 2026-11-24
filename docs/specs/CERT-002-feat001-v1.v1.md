@@ -10,7 +10,7 @@
 | **Builder** | (prior agent build; package now `0.3.1`) |
 | **Spec under test** | FEAT-001 v1 → [`FEAT-001-post-exit-handoff.v1.md`](FEAT-001-post-exit-handoff.v1.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1 (done) |
-| **Tree** | `/home/vinay/Code/playground/kalaga` @ **0.3.1** |
+| **Tree** | `kalaga` (repo root) @ **0.3.1** |
 
 ---
 

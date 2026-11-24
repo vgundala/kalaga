@@ -79,7 +79,9 @@ async function captureFor(agentKey: string): Promise<void> {
   try {
     const cfg = agentFor(agentKey);
     const hint = await sessionHintFor(cfg, repoDir);
-    if (hint) captureSession(repoDir, agentKey, normalizeSessionId(cfg, hint));
+    if (!hint) return;
+    const id = normalizeSessionId(cfg, hint);
+    if (id) captureSession(repoDir, agentKey, id);
   } catch { /* capture is best-effort */ }
 }
 
@@ -91,7 +93,7 @@ async function refreshState(deadKey: string | null): Promise<HandoffState> {
     const cfg = agentFor(deadKey);
     text = await lastSessionText(cfg, repoDir);
     hit = scanChunk(text.slice(-4000), cfg, null);
-    if (hit) console.error(`  💀 ${deadKey} — limit hit (matched "${hit.matched}")`);
+    if (hit) console.error(`  kalaga: limit hit — ${deadKey} (matched "${hit.matched}")`);
   }
   const cur = loadState(repoDir) ?? blankState(repoDir, currentBranch(repoDir));
   // L3: on a signature match, persist a short limit note (≤200 chars) so the
@@ -160,9 +162,9 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
 
 /** E3: one-line stderr notice of how the agent exited. */
 function exitNotice(agentKey: string, exitCode: number, hit: ReturnType<typeof scanChunk>, hasTail: boolean): void {
-  if (hit) console.error(`  💀 ${agentKey} — limit hit (matched "${hit.matched}")`);
-  else if (!hasTail && exitCode !== 0) console.error(`  ${agentKey} exited (code ${exitCode}) — no session log to scan`);
-  else console.error(`  ${agentKey} exited cleanly (code ${exitCode}).`);
+  if (hit) console.error(`  kalaga: limit hit — ${agentKey} (matched "${hit.matched}")`);
+  else if (!hasTail && exitCode !== 0) console.error(`  kalaga: ${agentKey} exited (code ${exitCode}) — no session log to scan`);
+  else console.error(`  kalaga: ${agentKey} exited cleanly (code ${exitCode}).`);
 }
 
 /** E6: suspect-tier confirm — same gate as SEC-001 L2 in doRecover. */
@@ -173,7 +175,7 @@ async function confirmAssumeLimit(deadKey: string, exitCode: number): Promise<bo
   const { createInterface } = await import('node:readline');
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const ans = await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }));
-  if (ans.trim().toLowerCase() === 'y') console.error(`  💀 ${deadKey} — limit hit assumed (code ${exitCode}, no store to verify)`);
+  if (ans.trim().toLowerCase() === 'y') console.error(`  kalaga: limit hit assumed — ${deadKey} (code ${exitCode}, no store to verify)`);
   return ans.trim().toLowerCase() === 'y';
 }
 
@@ -295,7 +297,7 @@ async function doRecover(): Promise<void> {
       ok = (await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }))).trim().toLowerCase() === 'y';
     }
     if (!ok) { console.error('kalaga: not assuming a limit hit — rerun with --assume-limit or confirm.'); return; }
-    console.error(`  💀 ${dead} — limit hit assumed (no store to verify)`);
+    console.error(`  kalaga: limit hit assumed — ${dead} (no store to verify)`);
   }
   await offerHandoff(dead);
 }
@@ -390,6 +392,25 @@ function doTrust(args: string[]): void {
   for (const g of grants) console.log(`${g.path}  (${g.granted_at.slice(0, 10)} → ${g.expires_at.slice(0, 10)})`);
 }
 
+function printHelp(): void {
+  console.log(`kalaga — local handoff across agy / cursor / grok / claude
+
+  kala init                 create .kala/state.yaml from git facts
+  kala status               headroom per agent + handoff state
+  kala run <agent>          interactive session; on limit hit → pick a taker
+  kala recover              trap after a limit (even if launched outside kala)
+  kala switch <agent>       hand off to <agent> now
+  kala resume [agent]       reopen a captured session by id (default: owner)
+  kala why [deadAgent]      dry-run taker ranking
+  kala trust [status|revoke <path>|revoke --all]
+  kala state goal|next|note|neg|done <text>
+  kala agents               list known agent keys
+
+  Flags (with bare start / recover): --assume-limit
+
+  Requires Node ≥ 24. Docs: README.md · SECURITY.md`);
+}
+
 async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   switch (cmd) {
@@ -407,23 +428,22 @@ async function main(): Promise<void> {
       console.log(ledger.map((u) => `${u.agent}${u.installed ? '' : ' (not installed)'}`).join(' '));
       break;
     }
+    case 'help':
+    case '-h':
+    case '--help':
+      printHelp();
+      break;
     case undefined:
     case '':
-      // `kala --assume-limit` (and any leading flag) = bare start with that flag
       await doStart();
       break;
     default:
-      if (cmd.startsWith('--')) { await doStart(); break; }
-      console.log(`kalaga — seamless handoff across agy / cursor / grok / claude
-  kala status               headroom per agent + handoff state
-  kala run <agent>          work in <agent>; on limit hit → pick a taker
-  kala recover              after a limit hit (even outside kala)
-  kala switch <agent>       hand off to <agent> now
-  kala resume [agent]       reopen a captured session by id (default: owner)
-  kala why [deadAgent]      show the taker ranking (dry run)
-  kala trust [status|revoke <path>|revoke --all]
-  kala state goal|next|note|neg|done <text>
-  kala init | kala agents`);
+      // Leading operational flags (e.g. --assume-limit) = bare start.
+      // Unknown flags still get help rather than a silent no-op.
+      if (cmd === '--assume-limit') { await doStart(); break; }
+      if (cmd.startsWith('-')) { printHelp(); process.exitCode = 2; break; }
+      printHelp();
+      process.exitCode = 2;
   }
 }
 

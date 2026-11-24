@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.0 — 2026-11-24
+
+Production-grade open-source polish (source distribution; no binary packaging).
+
+### Platform (OPS-003)
+
+- `resolveExecutable` uses `path.delimiter` and Windows `PATHEXT` / `.cmd` /
+  `.exe` rules; Unix keeps the executable-bit check.
+- `bin/kala.cmd` for PowerShell-friendly launches.
+- README install sections for Linux, macOS, Windows (Git Bash + PowerShell).
+
+### CI (OPS-002)
+
+- GitHub Actions workflow: Node 24, `npm test` only (no `npm install`).
+
+### Security (from 0.5.1)
+
+- Resume session-id allowlist; rich-inject path sanitize; `SECURITY.md`.
+
+### Professional surface
+
+- README rewrite; `CONTRIBUTING.md`; `CODE_OF_CONDUCT.md`; `.editorconfig`;
+  `.gitattributes`; expanded `.gitignore`.
+- CLI messages use a consistent `kalaga:` prefix (no emoji markers).
+- User guide aligned with install story; package metadata (`license`,
+  `files`, `keywords`, `engines`).
+- Name etymology codified: *Kalaga* (Telugu) = mix / blending; `kala` = CLI
+  form (README, guide, paper, ARCH-001, `package.json` description).
+- README / CONTRIBUTING: best-effort support — report bugs, fork for
+  features, PRs appreciated.
+- Copyright holder: **Infoverse Data LLC** (MIT); author/maintainer:
+  **Vinay Gundala** (LICENSE, README, `package.json`, paper).
+
+### Tests
+
+- 36 checks including OPS-003 PATH delimiter coverage.
+
+## 0.5.1 — 2026-11-24
+
+Security hardening (source-trust pass before public clone):
+
+- Resume session ids allowlisted (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`) on
+  normalize/capture/YAML load/`kala resume` — blocks flag-shaped
+  `sessions.*.id` values from becoming vendor argv.
+- Rich inject sanitizes `modified_files` (controls + path caps).
+- `SECURITY.md` + README: dual-channel handoff (sanitized inject vs
+  on-disk state agents are told to read) and residual risks stated plainly.
+- `npm test`: +3 security checks (id allowlist, poisoned load/capture,
+  rich path sanitize).
+
 ## 0.5.0 — 2026-11-22
 
 FEAT-003 v1 (handoff state protocol + seam enrichment):

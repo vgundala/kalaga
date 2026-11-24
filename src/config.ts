@@ -152,26 +152,67 @@ export function isInstalled(agent: AgentConfig): boolean {
   return resolveExecutable(agent.interactive[0]) !== null;
 }
 
-/** SEC-001 B1/B2: resolve a command to an absolute executable path once,
+/** OPS-003 P1: split PATH with the platform delimiter (':' Unix, ';' Windows). */
+export function splitPathEnv(pathEnv: string = process.env.PATH ?? ''): string[] {
+  return pathEnv.split(path.delimiter).filter(Boolean);
+}
+
+function winPathext(): string[] {
+  const raw = process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM';
+  return raw.split(';').filter(Boolean).map((e) => e.toLowerCase());
+}
+
+/** OPS-003 P2: is this path a runnable file on the current platform? */
+function isRunnablePath(p: string): boolean {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile()) return false;
+    if (process.platform === 'win32') {
+      const ext = path.extname(p).toLowerCase();
+      return !ext || winPathext().includes(ext);
+    }
+    return (st.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+function realIfRunnable(p: string): string | null {
+  if (!isRunnablePath(p)) return null;
+  try { return fs.realpathSync(p); } catch { return null; }
+}
+
+/** SEC-001 B1/B2 + OPS-003: resolve a command to an absolute executable once,
  *  or null. Absolute inputs are verified as-is; bare names walk PATH in
- *  order (first executable wins). Cached per-process so a PATH change mid-run
- *  can't swap the binary (B3: spawn always gets the resolved path). */
+ *  order (first runnable wins). On Windows, PATHEXT candidates are tried.
+ *  Cached per-process so a PATH change mid-run can't swap the binary. */
 const resolvedCache = new Map<string, string | null>();
+export function clearResolvedCache(): void {
+  resolvedCache.clear();
+}
 export function resolveExecutable(cmd: string): string | null {
   if (resolvedCache.has(cmd)) return resolvedCache.get(cmd) ?? null;
   let r: string | null = null;
   if (path.isAbsolute(cmd)) {
-    try {
-      const st = fs.statSync(cmd);
-      if (st.isFile() && (st.mode & 0o111) !== 0) r = fs.realpathSync(cmd);
-    } catch { r = null; }
+    r = realIfRunnable(cmd);
+    if (!r && process.platform === 'win32') {
+      for (const ext of winPathext()) {
+        r = realIfRunnable(cmd + ext);
+        if (r) break;
+      }
+    }
   } else {
-    for (const d of (process.env.PATH ?? '').split(':')) {
-      const p = path.join(d, cmd);
-      try {
-        const st = fs.statSync(p);
-        if (st.isFile() && (st.mode & 0o111) !== 0) { r = fs.realpathSync(p); break; }
-      } catch { /* keep looking */ }
+    for (const d of splitPathEnv()) {
+      const base = path.join(d, cmd);
+      r = realIfRunnable(base);
+      if (r) break;
+      if (process.platform === 'win32') {
+        for (const ext of winPathext()) {
+          r = realIfRunnable(base + ext);
+          if (r) break;
+        }
+        if (r) break;
+      }
     }
   }
   resolvedCache.set(cmd, r);
