@@ -34,7 +34,7 @@ Many developers keep more than one AI coding subscription so work does not stop 
 ### Linux / macOS
 
 ```sh
-git clone <your-fork-or-upstream-url> kalaga
+git clone https://github.com/vgundala/kalaga.git
 cd kalaga
 chmod 755 bin/kala
 ln -sf "$(pwd)/bin/kala" ~/.local/bin/kala   # ensure ~/.local/bin is on PATH
@@ -44,7 +44,7 @@ kala --help
 ### Windows (PowerShell)
 
 ```powershell
-git clone <your-fork-or-upstream-url> kalaga
+git clone https://github.com/vgundala/kalaga.git
 cd kalaga
 # Option A — call Node directly
 node .\bin\kala status
