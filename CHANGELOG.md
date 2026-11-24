@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.3 — 2026-11-24
+
+- Removed optional `ceilings:` from `~/.kala/config.yaml`. Token headroom uses
+  fixed builtins only; config keeps `inject_rich_prompt` and `trust_ttl_days`.
+- Picker: off-TTY / EOF / garbage input stays (no auto-launch). Bare `kala`
+  honors `choice.stay` instead of starting an agent anyway.
+- `offerHandoff` no longer passes fake dead agent `'none'` into the picker.
+- Tests: `interpretPickAnswer` coverage (45 checks).
+
 ## 0.6.2 — 2026-11-24
 
 Release package after verifying the 0.6.1 pre-release security audit.

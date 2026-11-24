@@ -34,6 +34,7 @@ const state = await import(`${SRC}/state/state.ts`);
 const trust = await import(`${SRC}/trust.ts`);
 const launch = await import(`${SRC}/launch.ts`);
 const liveask = await import(`${SRC}/liveask.ts`);
+const picker = await import(`${SRC}/picker.ts`);
 
 section('sanitize / inject (P2/P3)');
 await test('strips C0 controls + DEL, keeps \\n \\t', () => {
@@ -319,6 +320,31 @@ await test('H8: liveAskArgv uses headless flags, no TTY', () => {
   const argv = liveask.liveAskArgv(cfg.AGENTS.claude, 'PROMPT');
   assert.deepStrictEqual(argv.slice(0, -1), cfg.AGENTS.claude.headless);
   assert.strictEqual(argv[argv.length - 1], 'PROMPT');
+});
+
+section('picker interpretPickAnswer (EOF / off-TTY safety)');
+const base = { hasDead: true, recCount: 3, stayDefault: false, stdinIsTTY: true };
+await test('TTY Enter → recommendation index 0', () => {
+  assert.strictEqual(picker.interpretPickAnswer('', base), 0);
+});
+await test('off-TTY empty → stay', () => {
+  assert.strictEqual(picker.interpretPickAnswer('', { ...base, stdinIsTTY: false }), 'stay');
+});
+await test('stayDefault Enter → stay', () => {
+  assert.strictEqual(picker.interpretPickAnswer('', { ...base, stayDefault: true }), 'stay');
+});
+await test('q / e → stay', () => {
+  assert.strictEqual(picker.interpretPickAnswer('q', base), 'stay');
+  assert.strictEqual(picker.interpretPickAnswer('e', base), 'stay');
+});
+await test('0 with dead → wait', () => {
+  assert.strictEqual(picker.interpretPickAnswer('0', base), 'wait');
+});
+await test('off-TTY garbage → stay (not auto-pick)', () => {
+  assert.strictEqual(picker.interpretPickAnswer('xyz', { ...base, stdinIsTTY: false }), 'stay');
+});
+await test('TTY number → index', () => {
+  assert.strictEqual(picker.interpretPickAnswer('2', base), 1);
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

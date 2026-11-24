@@ -1,6 +1,6 @@
-// Kalaga config: agent roster, ceilings, error signatures.
-// Kept deliberately dumb: this is the only file you tune. Rename the app and
-// nothing here cares — agents are addressed by key, never by app name.
+// Kalaga config: agent roster, builtin headroom ceilings, error signatures.
+// Ceilings are fixed estimates for status/ranking — not user-configurable.
+// Rename the app and nothing here cares — agents are addressed by key.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -98,10 +98,6 @@ export const WARN_THRESHOLD = 15_000;
 // by the ledger (usage) and the trap (session tail) so neither is unbounded.
 export const CURSOR_META_SCAN_CAP = 2000;
 
-export interface KalagaConfig {
-  agents: Record<string, Partial<AgentConfig> & { ceiling?: number }>;
-}
-
 export function kalagaHome(): string {
   return process.env.KALA_HOME ?? path.join(os.homedir(), '.kala');
 }
@@ -115,28 +111,14 @@ export function configPath(): string {
 }
 
 /**
- * Load ~/.kala/config.yaml (tiny: agent ceilings / overrides) and merge onto
- * the built-in AGENTS. Missing file = pure built-ins. No YAML parser needed:
- * we accept a flat `  agent: 123456` ceiling map under `ceilings:`.
+ * Built-in agent roster as shallow copies (SEC-001 M1). Token ceilings are
+ * fixed builtins for headroom estimates — `~/.kala/config.yaml` does not
+ * override them (only trust_ttl_days / inject_rich_prompt are read elsewhere).
  */
 export function loadAgents(): Record<AgentKey, AgentConfig> {
-  // SEC-001 M1: return copies — config overrides must never mutate AGENTS.
-  const out = Object.fromEntries(
+  return Object.fromEntries(
     AGENT_ORDER.map((k) => [k, { ...AGENTS[k], limitPatterns: [...AGENTS[k].limitPatterns], store: { ...AGENTS[k].store } }]),
   ) as Record<AgentKey, AgentConfig>;
-  try {
-    const raw = fs.readFileSync(configPath(), 'utf8');
-    const m = raw.match(/^ceilings:\s*\n((?:\s{2}\w+:\s*\d+\s*\n?)+)/m);
-    if (m) {
-      for (const line of m[1].split('\n')) {
-        const km = line.match(/^\s{2}(\w+):\s*(\d+)/);
-        if (km && out[km[1] as AgentKey]) {
-          out[km[1] as AgentKey].ceiling = parseInt(km[2], 10);
-        }
-      }
-    }
-  } catch { /* no config → built-ins */ }
-  return out;
 }
 
 export function agentFor(key: string): AgentConfig {

@@ -131,7 +131,7 @@ async function offerHandoff(deadKey: string | null): Promise<void> {
   if (!recs.length) { console.error('kalaga: no agents to take over.'); return; }
   // P4 (O7/W2): one-line continuation hint BEFORE the picker (non-blocking).
   console.error(`  ${nextStepHint(state)}`);
-  const choice = await pick(recs, ledger, deadKey ?? 'none');
+  const choice = await pick(recs, ledger, deadKey);
   if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   if (choice.wait) {
     // R13: wait row → one-line resume hint when a fresh session was captured.
@@ -250,6 +250,7 @@ async function doStart(): Promise<void> {
     return;
   }
   const choice = await pick(recs, ledger, null);
+  if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   const next = agentFor(choice.agent);
   const st = mergeState(repoDir, { owner: next.key });
   const fresh = st.goal.startsWith('not captured');

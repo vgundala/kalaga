@@ -2,6 +2,7 @@
 // no dependencies. Shows a numbered shortlist.
 //   limit tier (default): Enter = recommended pick
 //   clean tier (stayDefault): Enter = stay / back to shell (FEAT-001 E7)
+//   off-TTY / EOF: stay (never auto-launch from a closed pipe)
 // `q` / `e` = stay, in every tier (E8).
 import { createInterface } from 'node:readline';
 import process from 'node:process';
@@ -20,6 +21,24 @@ export interface PickOptions {
   /** Header line above the shortlist (defaults by mode). */
   header?: string;
   onKey?: (k: string) => void;
+}
+
+/** Pure answer decoder — unit-tested. Off-TTY empty/garbage → stay. */
+export function interpretPickAnswer(
+  raw: string,
+  opts: { stayDefault?: boolean; hasDead: boolean; recCount: number; stdinIsTTY: boolean },
+): 'stay' | 'wait' | number {
+  const n = raw.trim().toLowerCase();
+  if (n === 'q' || n === 'e') return 'stay';
+  if (n === '') {
+    if (!opts.stdinIsTTY || opts.stayDefault) return 'stay';
+    return 0; // Enter = recommendation
+  }
+  if (n === '0' && opts.hasDead) return 'wait';
+  const idx = parseInt(n, 10) - 1;
+  if (Number.isInteger(idx) && idx >= 0 && idx < opts.recCount) return idx;
+  if (!opts.stdinIsTTY || opts.stayDefault) return 'stay';
+  return 0;
 }
 
 /** Render + prompt. Returns the user's choice. `dead` is the exhausted
@@ -48,20 +67,16 @@ export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string 
   return new Promise<PickResult>((resolve) => {
     rl.question('', (ans) => {
       rl.close();
-      const n = ans.trim().toLowerCase();
-      opts.onKey?.(n);
-      // E8: explicit escape in every tier.
-      if (n === 'q' || n === 'e') return resolve({ agent: recs[0].agent, wait: false, stay: true });
-      if (n === '') return opts.stayDefault
-        ? resolve({ agent: recs[0].agent, wait: false, stay: true })
-        : resolve({ agent: recs[0].agent, wait: false });
-      if (n === '0' && dead) return resolve({ agent: dead, wait: true });
-      const idx = parseInt(n, 10) - 1;
-      if (Number.isInteger(idx) && recs[idx]) return resolve({ agent: recs[idx].agent, wait: false });
-      // fallback: stay when declining-by-default, else the recommendation
-      return opts.stayDefault
-        ? resolve({ agent: recs[0].agent, wait: false, stay: true })
-        : resolve({ agent: recs[0].agent, wait: false });
+      opts.onKey?.(ans);
+      const decoded = interpretPickAnswer(ans, {
+        stayDefault: opts.stayDefault,
+        hasDead: !!dead,
+        recCount: recs.length,
+        stdinIsTTY: !!process.stdin.isTTY,
+      });
+      if (decoded === 'stay') return resolve({ agent: recs[0].agent, wait: false, stay: true });
+      if (decoded === 'wait') return resolve({ agent: dead!, wait: true });
+      return resolve({ agent: recs[decoded].agent, wait: false });
     });
   });
 }

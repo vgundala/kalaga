@@ -134,17 +134,14 @@ Add `.kala/` to `.gitignore`. Never store secrets in handoff state.
 Per-user files live under `~/.kala/` (`config.yaml`, `trust.yaml`). Override with `$KALA_HOME`.
 
 ```yaml
-# ~/.kala/config.yaml (optional)
-ceilings:
-  agy: 1000000
-  cursor: 250000
-  grok: 250000
-  claude: 250000
+# ~/.kala/config.yaml (optional) — no token ceilings to tune
 inject_rich_prompt: false
 trust_ttl_days: 30
 ```
 
-Limit-detection signatures and binary names are defined in `src/config.ts`.
+Headroom numbers in `kala status` use fixed builtin estimates (exact where a
+vendor store exposes usage). Limit-detection signatures and binary names live
+in `src/config.ts`.
 
 ## Security
 
