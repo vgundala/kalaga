@@ -96,6 +96,11 @@ kala agents                        List known agent keys
 
 `q` or `e` returns to the shell without launching another agent.
 
+`--assume-limit` is honored on a TTY by itself. **Off-TTY** (scripts, CI,
+piped stdin) it is ignored unless `KALA_ASSUME_LIMIT=1` is also set — so a
+flag left in a wrapper script or a copied command cannot silently pre-approve
+a limit assumption nobody saw.
+
 ## Handoff protocol
 
 `.kala/state.yaml` is the contract between agents. Kalaga instructs every launched agent to keep it current before stopping.

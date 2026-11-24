@@ -53,8 +53,8 @@ async function printStatus(): Promise<void> {
     console.log('');
     console.log(`  handoff: ${state.status} · owner=${state.owner ?? '—'} · ${state.modified_files.length} files · updated ${state.updated.slice(0, 16).replace('T', ' ')}`);
     console.log(`  goal: ${state.goal.slice(0, 80)}${state.goal.length > 80 ? '…' : ''}`);
-    const d0 = state.done[0] ? ` — ${state.done[0].slice(0, 60)}${state.done[0].length > 60 ? '…' : ''}` : '';
-    console.log(`  done: ${state.done.length ? `${state.done.length}${d0}` : '—'}`);
+    const d0 = state.done?.[0] ? ` — ${state.done[0].slice(0, 60)}${state.done[0].length > 60 ? '…' : ''}` : '';
+    console.log(`  done: ${state.done?.length ? `${state.done.length}${d0}` : '—'}`);
     console.log(`  next: ${state.next_step.slice(0, 80)}`);
   } else {
     console.log('');
@@ -167,9 +167,19 @@ function exitNotice(agentKey: string, exitCode: number, hit: ReturnType<typeof s
   else console.error(`  kalaga: ${agentKey} exited cleanly (code ${exitCode}).`);
 }
 
+/** `--assume-limit` gate. On a TTY the flag alone suffices (explicit, visible).
+ *  Off-TTY (scripts/CI) the flag is ignored unless KALA_ASSUME_LIMIT=1 — so a
+ *  flag left in a wrapper script or copied command can't silently pre-approve
+ *  a limit assumption the user never saw. */
+function assumeLimitFlagged(): boolean {
+  if (!process.argv.includes('--assume-limit')) return false;
+  if (process.stdin.isTTY) return true;
+  return process.env.KALA_ASSUME_LIMIT === '1';
+}
+
 /** E6: suspect-tier confirm — same gate as SEC-001 L2 in doRecover. */
 async function confirmAssumeLimit(deadKey: string, exitCode: number): Promise<boolean> {
-  if (process.argv.includes('--assume-limit')) return true;
+  if (assumeLimitFlagged()) return true;
   if (!process.stdin.isTTY) return false;
   process.stderr.write(`  assume it hit its limit? [y/N] `);
   const { createInterface } = await import('node:readline');
@@ -288,7 +298,7 @@ async function doRecover(): Promise<void> {
   } else {
     // SEC-001 L2: no readable store (e.g. agy) — never assume the limit
     // silently. Require --assume-limit or an explicit [y/N].
-    const assume = process.argv.includes('--assume-limit');
+    const assume = assumeLimitFlagged();
     let ok = assume;
     if (!ok && process.stdin.isTTY) {
       process.stderr.write(`  no session log to scan for ${dead} — assume it hit its limit? [y/N] `);
@@ -440,7 +450,8 @@ async function main(): Promise<void> {
     default:
       // Leading operational flags (e.g. --assume-limit) = bare start.
       // Unknown flags still get help rather than a silent no-op.
-      if (cmd === '--assume-limit') { await doStart(); break; }
+      // --assume-limit / --strict-state (or any leading flag) = bare start.
+      if (cmd.startsWith('--')) { await doStart(); break; }
       if (cmd.startsWith('-')) { printHelp(); process.exitCode = 2; break; }
       printHelp();
       process.exitCode = 2;

@@ -78,6 +78,13 @@ await test('SEC: rich inject sanitizes modified_files (controls + caps)', () => 
   assert.ok(inj.includes('badpath.ts'));
   assert.ok(inj.includes('…'));
 });
+await test('AUDIT: handoff inject sanitizes owner (control chars stripped)', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.owner = 'claude\x00\x1b[31mPOISON';
+  const inj = handoffInject(s, false);
+  assert.ok(!inj.includes('\x00') && !inj.includes('\x1b'), 'no control chars from owner');
+  assert.ok(inj.includes('Kalaga handoff from claude'), 'owner still shown');
+});
 
 section('classifyExit / scanChunk (E2, L1)');
 const hit = { matched: 'm', line: 'l', exitCode: null, agent: 'x' };
@@ -123,6 +130,19 @@ await test('OPS-003 P1/P6: splitPathEnv uses path.delimiter', () => {
 });
 
 section('safe state I/O (S1–S4)');
+await test('AUDIT: loadState rejects non-agent owner (poisoned state)', () => {
+  const r = path.join(ROOT, 'owner-repo');
+  const s = state.blankState(r, null);
+  s.owner = 'claude\x00rm -rf';
+  state.saveState(r, s);
+  assert.strictEqual(state.loadState(r)?.owner, null);
+  const s2 = state.loadState(r);
+  assert.strictEqual(s2?.owner, null);
+  // a valid owner round-trips
+  s.owner = 'cursor';
+  state.saveState(r, s);
+  assert.strictEqual(state.loadState(r)?.owner, 'cursor');
+});
 await test('symlinked state.yaml → refuse, target untouched', () => {
   const r = path.join(ROOT, 's1');
   fs.mkdirSync(path.join(r, '.kala'), { recursive: true });

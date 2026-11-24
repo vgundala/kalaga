@@ -122,10 +122,13 @@ export function loadState(repoDir: string): HandoffState | null {
       else top[kv[1]] = v;
     }
     const orNull = (v: string | undefined) => (v && v !== 'null' ? v : null);
+    const owner = orNull(top.owner);
     const s: HandoffState = {
       goal: top.goal ?? '',
       status: (top.status as HandoffState['status']) ?? 'IN_PROGRESS',
-      owner: orNull(top.owner),
+      // Audit: owner is interpolated into the handoff prompt — only known
+      // agent keys are trustworthy; anything else (poisoned state) → null.
+      owner: owner && ['agy', 'cursor', 'grok', 'claude'].includes(owner) ? owner : null,
       branch: orNull(top.branch),
       updated: top.updated ?? new Date().toISOString(),
       modified_files: lists.modified_files,

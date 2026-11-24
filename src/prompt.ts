@@ -67,7 +67,8 @@ export function handoffInject(s: HandoffState, rich = false): string {
     negative_constraints: sanitizeHandoffList(s.negative_constraints, FIELD_MAX.negItems, FIELD_MAX.negItem),
     modified_files: sanitizeHandoffList(s.modified_files, FIELD_MAX.pathItems, FIELD_MAX.pathItem),
   };
-  const base = `Kalaga handoff from ${st.owner ?? 'another agent'}. Read .kala/state.yaml in the project root before doing anything.`;
+  const from = sanitizeHandoffField(st.owner ?? 'another agent', 80);
+  const base = `Kalaga handoff from ${from}. Read .kala/state.yaml in the project root before doing anything.`;
   const lines = [
     base,
     `Goal: ${st.goal}`,

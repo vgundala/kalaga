@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.1 — 2026-11-24
+
+Pre-release security audit (source distribution). Four findings fixed:
+
+- **Owner sanitization.** A poisoned `.kala/state.yaml` `owner` value could
+  carry control/escape bytes into the handoff prompt. The owner is now
+  sanitized before interpolation (prompt) and restricted to known agent keys
+  on load (state) — anything else becomes `null`.
+- **`--assume-limit` off-TTY.** The flag now only pre-approves a limit
+  assumption on a TTY. Off-TTY (scripts/CI/piped stdin) it is ignored unless
+  `KALA_ASSUME_LIMIT=1` is also set, so a flag left in a wrapper script or a
+  copied command can't silently pre-approve what nobody saw.
+- **Status `done` crash.** `kala status` crashed on state written by an older
+  version (no `done:` key). Now defensive (`state.done?.`).
+- **`--strict-state` at bare start.** `kala --strict-state` (and any leading
+  `--flag`) now starts a bare run instead of falling through to help, matching
+  how `--assume-limit` already behaved.
+
+Tests: 38 (was 36). LICENSE copyright updated to Infoverse Data LLC (MIT).
+
 ## 0.6.0 — 2026-11-24
 
 Production-grade open-source polish (source distribution; no binary packaging).
