@@ -1,10 +1,16 @@
 # Kalaga
 
-**Local handoff across AI coding CLIs.** Kalaga (`kala`) sits in front of the agent tools you already use—Antigravity (`agy`), Cursor Agent, Grok, and Claude Code. When one hits a usage or session limit, it refreshes a shared project handoff file and lets you continue on another installed agent with a single keypress.
+**Local handoff across AI coding CLIs.** Use all your subscriptions efficiently.
+
+Kalaga (`kala`) sits in front of the agent tools you already use—Antigravity (`agy`), Cursor Agent, Grok, and Claude Code. When one hits a usage or session limit, it refreshes a shared project handoff file and lets you continue on another installed agent with a single keypress.
 
 *Kalaga* (Telugu): a mix / blending — capacity across CLIs without replacing them. The shell command is `kala`.
 
 No cloud account. No runtime dependencies. No build step. Clone the source, put `kala` on your `PATH`, and run.
+
+### Why this exists
+
+I already held the AI subscriptions — some strong, some still improving — and kept looking for a way to combine them so tokens did not sit idle when one product hit a wall. Now that coding models and CLI agents are largely on par with each other, the missing piece was continuity across tools. Unpredictable Google AI Pro / Antigravity limits made that gap impossible to ignore. Kalaga is the handoff layer that grew out of that: finish the work on the next agent without re-explaining the job.
 
 | | |
 |---|---|
@@ -161,9 +167,12 @@ GitHub Actions (`.github/workflows/test.yml`) runs the same suite on Node 24 for
 | [guides/what-is-kalaga.md](docs/guides/what-is-kalaga.md) | Multi-subscription users |
 | [SECURITY.md](SECURITY.md) | Trust & threat residuals |
 | [papers/kalaga-multi-cli-handoff.md](docs/papers/kalaga-multi-cli-handoff.md) | Design + competitive landscape |
-| [docs/](docs/) | Specs, process, index |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to change the tree safely |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [docs/specs/INDEX.md](docs/specs/INDEX.md) | Design specs (ARCH / SEC / FEAT / OPS) |
+| [docs/](docs/) | Docs hub (public vs historical) |
+
+Internal build/certify records (optional): [docs/specs/history/](docs/specs/history/).
 
 ## Design principles
 

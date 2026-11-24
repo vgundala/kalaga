@@ -7,7 +7,7 @@
 | **Status** | `final` |
 | **Date** | 2026-11-24 |
 | **Certifier** | Technical lead |
-| **Spec under test** | OPS-003 v1 → [`OPS-003-cross-platform.v1.md`](OPS-003-cross-platform.v1.md) |
+| **Spec under test** | OPS-003 v1 → [`OPS-003-cross-platform.v1.md`](../OPS-003-cross-platform.v1.md) |
 | **Also constrained by** | ARCH-001 v1 |
 | **Tree** | `kalaga` @ **0.6.0** |
 

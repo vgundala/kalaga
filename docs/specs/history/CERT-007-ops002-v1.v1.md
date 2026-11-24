@@ -7,7 +7,7 @@
 | **Status** | `final` |
 | **Date** | 2026-11-24 |
 | **Certifier** | Technical lead |
-| **Spec under test** | OPS-002 v1 → [`OPS-002-ci.v1.md`](OPS-002-ci.v1.md) |
+| **Spec under test** | OPS-002 v1 → [`OPS-002-ci.v1.md`](../OPS-002-ci.v1.md) |
 | **Also constrained by** | OPS-003 v1 (done, CERT-006); ARCH-001 v1 |
 | **Tree** | `kalaga` @ **0.6.0** |
 

@@ -8,7 +8,7 @@
 | **Date** | 2026-11-22 |
 | **Certifier** | Technical lead |
 | **Builder** | (prior agent build) |
-| **Spec under test** | FEAT-002 v1 → [`FEAT-002-session-capture-resume.v1.md`](FEAT-002-session-capture-resume.v1.md) |
+| **Spec under test** | FEAT-002 v1 → [`FEAT-002-session-capture-resume.v1.md`](../FEAT-002-session-capture-resume.v1.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1; FEAT-001 v1 |
 | **Tree** | `kalaga` (repo root) @ **0.4.0** |
 

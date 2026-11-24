@@ -288,12 +288,3 @@ INDEX → `certify`; next CERT references **FEAT-003 v1**.
 
 ---
 
-## 9. Handoff blurb (paste to builder)
-
-> Implement **FEAT-003 v1** after FEAT-002 is `done` (or in parallel only if
-> state `sessions` already landed). Add `done[]` to handoff state; protocol
-> inject (goal/done/next/avoid + standing orders) as default for handoff
-> launches; live-ask print-mode before limit handoff and switch (fail soft,
-> 45s timeout, merge `_source: 'live-ask'`); thin-state warning; `kala state
-> done`. Keep sanitize/caps. No new deps. Bump 0.5.0. Mark INDEX `certify`
-> and open CERT when finished.

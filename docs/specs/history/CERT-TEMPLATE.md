@@ -1,6 +1,7 @@
 # CERT-NNN — Certification Record (template)
 
-Copy to `CERT-NNN-{slug}.v1.md`. Do not leave `NNN` / placeholders in a filed record.
+Copy to `docs/specs/history/CERT-NNN-{slug}.v1.md`. Do not leave `NNN` /
+placeholders in a filed record. Link the spec under test with `../{spec}.md`.
 
 | Field | Value |
 |-------|-------|

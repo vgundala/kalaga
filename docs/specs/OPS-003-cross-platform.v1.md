@@ -151,10 +151,3 @@ INDEX → `certify`; CERT references **OPS-003 v1**.
 
 ---
 
-## 9. Handoff blurb (paste to builder)
-
-> Implement **OPS-003 v1** before OPS-002. Fix PATH to use `path.delimiter`,
-> make `resolveExecutable` Windows-safe (PATHEXT / .cmd/.exe), document
-> Linux/macOS/Windows (Git Bash + PowerShell) install, add a small delimiter
-> test, bump **0.5.2**. No product feature work. Smoke on Windows if you have
-> it; Mac if you have it. Mark INDEX `certify` and open CERT when done.

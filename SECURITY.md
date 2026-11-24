@@ -16,9 +16,10 @@ resume ids, and documented residuals.**
 | No shell string exec for agents/git | `spawn` / `execFileSync` with argv arrays only |
 | No silent `--trust` | Path grant in `~/.kala/trust.yaml` after explicit `y` |
 | No symlink state overwrite | Refuse symlinked `.kala` / `state.yaml`; atomic `0600` write |
-| Inject is sanitized | Controls stripped; field/list caps; rich `modified_files` sanitized |
+| Inject is sanitized | Controls stripped; field/list caps; rich `modified_files` sanitized; `owner` sanitized + allowlisted to known agent keys |
 | Resume ids cannot be CLI flags | Allowlist on capture, YAML load, and `kala resume` |
 | Limit detection is honest | Empty store ≠ limit; store-less recover needs confirmation |
+| No silent `--assume-limit` off-TTY | Flag alone works on a TTY; scripts/CI need `KALA_ASSUME_LIMIT=1` as well |
 | Supply chain surface | Zero `dependencies` in `package.json` |
 
 Verify locally: `npm test` (stdlib suite; no network).
@@ -31,7 +32,7 @@ These are accepted residuals — product choices or vendor limits, not forgotten
 2. **Child environment.** Interactive and live-ask children inherit full `process.env` (API keys, tokens already in your shell).
 3. **PATH at first resolve.** The first successful lookup of `claude` / `agy` / etc. is cached as an absolute path for that process. A hostile `PATH` before first use can bind the wrong binary; Kalaga does not hash-pin binaries.
 4. **Vendor stores.** Session tails and sqlite reads are local and bounded; Kalaga does not log stores wholesale. Those directories may still hold secrets belonging to the vendor CLIs.
-5. **Windows PATH/`PATHEXT`.** Cross-platform PATH fixes are specified (OPS-003) but not the trust bar for a Linux-first source drop. Do not treat Windows as verified until that ships.
+5. **Windows smoke.** PATH/`PATHEXT` resolution is implemented (OPS-003); full interactive smoke on Windows/macOS may still be maintainer-waived on a given release — check the changelog.
 6. **Live-ask.** A headless call to the finishing agent can spend remaining quota and merges only sanitized YAML keys; junk/timeout fails soft.
 
 ## Threat notes for people who fork or point agents at this repo

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2 — 2026-11-24
+
+Release package after verifying the 0.6.1 pre-release security audit.
+
+- **Audit verdict:** four 0.6.1 findings remain correctly fixed (owner
+  sanitize + allowlist; `--assume-limit` off-TTY gate; status `done?`
+  defensive; leading `--flag` bare start). `npm test` — **38 passed**.
+- **SECURITY.md** updated for owner allowlist and off-TTY assume-limit.
+- **Docs:** CERT records → `docs/specs/history/`; handoff blurbs removed from
+  living specs; README / CONTRIBUTING / docs hub demote internal process;
+  etymology, support policy, and maintainer attribution from the 0.6.x polish
+  pass included in this release tree.
+
 ## 0.6.1 — 2026-11-24
 
 Pre-release security audit (source distribution). Four findings fixed:
@@ -52,6 +65,10 @@ Production-grade open-source polish (source distribution; no binary packaging).
   features, PRs appreciated.
 - Copyright holder: **Infoverse Data LLC** (MIT); author/maintainer:
   **Vinay Gundala** (LICENSE, README, `package.json`, paper).
+- README motivation: combine subscriptions / efficient token use; Google AI
+  Pro / Antigravity limits as the forcing function.
+- Docs cleanup: CERT records → `docs/specs/history/`; handoff blurbs removed
+  from living specs; README/CONTRIBUTING/docs hub demote internal process.
 
 ### Tests
 

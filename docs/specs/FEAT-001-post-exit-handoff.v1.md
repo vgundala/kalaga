@@ -193,13 +193,3 @@ referencing **FEAT-001 v1** exactly.
 
 ---
 
-## 9. Handoff blurb (paste to builder)
-
-> Implement **FEAT-001 v1** under ARCH-001 v1 + SEC-001 v1 (done). Capture the
-> exit code in bare `kala` and `kala run`, classify via the pure
-> `classifyExit`, and offer the tiered prompt: limit = today's picker, suspect
-> = `[y/N]` (L2 pattern), clean = stay-default menu (Enter = shell). `q`/`e`
-> always stays. No chained menus; no auto-launch on non-limit exits. Note in
-> the spec record that this amends SEC-001 L1's "no picker" acceptance to a
-> stay-default menu. When finished, mark INDEX `certify` and request
-> certification against FEAT-001 v1.

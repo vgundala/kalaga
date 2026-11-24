@@ -60,6 +60,3 @@ Lock this spec only after SEC-001 certify passes.
 
 ---
 
-## 6. Handoff blurb
-
-> Do not build OPS-001 until status is `locked` and SEC-001 v1 is `done`. This draft exists so share-readiness is tracked; TL will lock after security certify.

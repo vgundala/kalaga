@@ -8,7 +8,7 @@
 | **Date** | 2026-11-22 |
 | **Certifier** | Technical lead |
 | **Builder** | (prior agent build) |
-| **Spec under test** | OPS-001 v2 → [`OPS-001-share-readiness.v2.md`](OPS-001-share-readiness.v2.md) |
+| **Spec under test** | OPS-001 v2 → [`OPS-001-share-readiness.v2.md`](../OPS-001-share-readiness.v2.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1 (done) |
 | **Tree** | `kalaga` (repo root) @ **0.3.1** |
 

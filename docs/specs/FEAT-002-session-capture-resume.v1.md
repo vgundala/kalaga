@@ -278,13 +278,3 @@ Builder marks INDEX `certify`, opens next CERT referencing **FEAT-002 v1**.
 
 ---
 
-## 9. Handoff blurb (paste to builder)
-
-> Implement **FEAT-002 v1** under ARCH-001 + SEC-001 + FEAT-001. Persist
-> ledger `sessionHint` into `.kala/state.yaml` (`sessions.<agent>.{id,at}`),
-> normalize Claude `.jsonl` names, add `kala resume [agent]` using verified
-> flags (claude/grok `-r`/`--resume`, cursor `--resume`, agy
-> `--conversation` when id known). Freshness = 7 days + artifact exists when
-> checkable. No handoff inject on resume. Wait-for-reset prints
-> `kala resume <dead>` when a fresh session exists. No new deps. Bump 0.4.0.
-> Mark INDEX `certify` and open CERT when done.

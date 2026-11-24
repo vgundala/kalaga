@@ -273,6 +273,3 @@ Builder sets SEC-001 status to `certify` in INDEX and opens CERT-001 (or next fr
 
 ---
 
-## 10. Handoff blurb (paste to builder)
-
-> Implement **SEC-001 v1** under **ARCH-001 v1**. Follow §3.3 order. Requirement IDs T/P/S/L/B/C/R/M/U are the acceptance surface. Trust = Option A path grants, not always-on `--trust`. No new dependencies. When finished, mark INDEX `certify` and request TL certification against SEC-001 v1 — do not bump the version yourself; request v2 if blocked.

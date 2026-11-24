@@ -140,6 +140,3 @@ Read-only baseline — no mandatory code changes from ARCH-001 alone. SEC-001 an
 
 ---
 
-## 8. Handoff blurb (for builders)
-
-> Follow ARCH-001 v1 as the non-negotiable product shape. Implement feature/security work from the locked SEC/FEAT spec cited in your brief. Do not add dependencies, do not pipe agent TUIs, do not auto-launch a taker without the picker. If a requirement conflicts with an A-invariant, stop and request a new ARCH version.

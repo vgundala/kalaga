@@ -6,9 +6,11 @@ Maintenance is **best-effort** (no SLA). Bug reports are welcome. Feature ideas 
 
 ## Before you change code
 
-1. Read [SECURITY.md](SECURITY.md) and [ARCH-001](docs/specs/ARCH-001-product-architecture.v1.md).
-2. Prefer a locked spec under `docs/specs/` for behavioral changes. Implementation chat is not the source of truth.
-3. Do not add runtime `dependencies` or `devDependencies` without an architecture decision that allows them.
+1. Read [SECURITY.md](SECURITY.md).
+2. For behavioral or security-sensitive changes, skim [ARCH-001](docs/specs/ARCH-001-product-architecture.v1.md) and [SEC-001](docs/specs/SEC-001-security-remediation.v1.md) so you do not violate product invariants.
+3. Do not add runtime `dependencies` or `devDependencies` without a clear architecture reason (Kalaga is zero-dep by design).
+
+You do **not** need to follow the internal spec → CERT workflow to send a PR. That process is optional for maintainers ([docs/SPEC_PROCESS.md](docs/SPEC_PROCESS.md); historical certs in [docs/specs/history/](docs/specs/history/)).
 
 ## Development
 
@@ -35,10 +37,6 @@ No install step is required. There is no lockfile by design.
 - Add or extend cases in `tests/run.ts` for security-sensitive behavior.
 - Update `CHANGELOG.md` under an Unreleased or version section when user-visible.
 - Run `npm test` and ensure it stays green.
-
-## Spec process
-
-See [docs/SPEC_PROCESS.md](docs/SPEC_PROCESS.md) and [docs/specs/INDEX.md](docs/specs/INDEX.md). Feature and ops work lands against locked versioned specs and CERT records.
 
 ## Conduct
 

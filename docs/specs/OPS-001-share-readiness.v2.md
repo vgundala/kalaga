@@ -83,12 +83,3 @@ the bar; CI wiring later), test coverage of live vendor CLIs.
 
 ---
 
-## 6. Handoff blurb (paste to builder)
-
-> Implement **OPS-001 v2** under ARCH-001 v1. Close W1–W4 exactly as
-> specified in §4 (O6–O8 + README line), land `tests/run.ts` on `npm test`,
-> add LICENSE (MIT) + CHANGELOG, bump 0.3.1, keep the tree dependency-free.
-> Do not touch FEAT-001/SEC-001 code beyond O7's one-line move. When
-> finished, mark INDEX `certify` and open CERT-003 referencing
-> **OPS-001 v2** — noting which waivers are now cleared so the TL can close
-> them in CERT-001's follow-up column.

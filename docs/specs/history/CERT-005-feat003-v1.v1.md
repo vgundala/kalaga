@@ -8,7 +8,7 @@
 | **Date** | 2026-11-22 |
 | **Certifier** | Technical lead |
 | **Builder** | (prior agent build) |
-| **Spec under test** | FEAT-003 v1 → [`FEAT-003-handoff-state-protocol.v1.md`](FEAT-003-handoff-state-protocol.v1.md) |
+| **Spec under test** | FEAT-003 v1 → [`FEAT-003-handoff-state-protocol.v1.md`](../FEAT-003-handoff-state-protocol.v1.md) |
 | **Also constrained by** | ARCH-001 v1; SEC-001 v1; FEAT-001 v1; FEAT-002 v1 |
 | **Tree** | `kalaga` (repo root) @ **0.5.0** |
 | **Also closes** | CERT-004 **W1/R4** (`refreshState` capture before return) |

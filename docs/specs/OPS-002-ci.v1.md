@@ -191,10 +191,3 @@ INDEX → `certify`; next CERT references **OPS-002 v1**.
 
 ---
 
-## 9. Handoff blurb (paste to builder)
-
-> Implement **OPS-002 v1**. Add `.github/workflows/test.yml`: ubuntu-latest,
-> Node 24, checkout, `npm test` only — **no** `npm install`. Trigger on push
-> and PR to `main`. README one-liner + CHANGELOG + bump **0.5.1**. No new
-> deps, no lockfile, no `src/` changes. Local `npm test` must stay green.
-> Mark INDEX `certify` and open CERT when done.
