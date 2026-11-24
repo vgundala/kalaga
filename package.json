@@ -36,5 +36,13 @@
     "quota",
     "local-first"
   ],
-  "author": "Vinay Gundala (Infoverse Data LLC)"
+  "author": "Vinay Gundala (Infoverse Data LLC)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vgundala/kalaga.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vgundala/kalaga/issues"
+  },
+  "homepage": "https://github.com/vgundala/kalaga#readme"
 }
