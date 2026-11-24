@@ -16,7 +16,7 @@ I already held the AI subscriptions — some strong, some still improving — an
 |---|---|
 | **License** | MIT |
 | **Runtime** | Node.js ≥ 24 |
-| **Agents** | `agy` · `cursor-agent` · `grok` · `claude` |
+| **Agents** | Antigravity (`agy`) · Cursor (`cursor-agent`) · Grok · Claude Code |
 | **Install** | Source symlink / `node bin/kala` (no published binary required) |
 
 ## Why it exists
