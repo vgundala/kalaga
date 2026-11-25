@@ -19,3 +19,5 @@ jobs:
           node-version: "24"
       - name: Run test suite
         run: npm test
+      - name: Real-agent E2E (auto / no TTY)
+        run: npm run test:e2e:auto
