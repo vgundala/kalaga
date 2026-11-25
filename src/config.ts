@@ -24,11 +24,27 @@ export interface AgentConfig {
   ceiling: number;
   /** Error signatures that mean "this agent is out of quota for now". */
   limitPatterns: string[];
-  /** How the ledger finds this agent's session store. */
+  /** How the ledger finds this agent's session store.
+   *  jsonl/sqlite → exact token heads where available; meta → session discovery
+   *  and/or estimates only (agy: Antigravity conversation id; cursor: chat meta). */
   store: { kind: 'jsonl' | 'sqlite' | 'meta'; dir?: string };
 }
 
-const GROC_HOME = path.join(os.homedir(), '.grok', 'bin', 'grok');
+/** Vendor limit phrases. Bare words like "quota" match ordinary prose. */
+const LIMIT_PATTERNS = [
+  'usage limit',
+  'quota exceeded',
+  'over.*quota',
+  'out of quota',
+  'insufficient (?:credits|quota|balance|funds)',
+  'out of credits',
+  'rate.?limit(?:ed| exceeded)?',
+  'limit reached',
+  'spending limit',
+  'session limit',
+  'too many requests',
+  'usage reset',
+];
 
 export const AGENTS: Record<AgentKey, AgentConfig> = {
   agy: {
@@ -39,11 +55,10 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     headless: ['-p', '--output-format', 'text'],
     resumeByIdPrefix: ['--conversation'],
     ceiling: 250_000,
-    limitPatterns: [
-      'rate.?limit', 'usage limit', 'quota', 'too many requests',
-      'usage reset', 'spending limit', 'insufficient', 'limit reached',
-    ],
-    store: { kind: 'meta' },
+    limitPatterns: [...LIMIT_PATTERNS],
+    // Session ids: ~/.gemini/antigravity-cli/cache/last_conversations.json
+    // + conversations/<uuid>.db (see ledger.agySessionHint). No public token store.
+    store: { kind: 'meta', dir: '.gemini/antigravity-cli' },
   },
   cursor: {
     key: 'cursor',
@@ -53,24 +68,18 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     headless: ['-p', '--output-format', 'text'],
     resumeByIdPrefix: ['--resume'],
     ceiling: 250_000,
-    limitPatterns: [
-      'rate.?limit', 'usage limit', 'quota', 'too many requests',
-      'limit reached', 'spending limit', 'insufficient',
-    ],
+    limitPatterns: [...LIMIT_PATTERNS],
     store: { kind: 'meta' },
   },
   grok: {
     key: 'grok',
-    interactive: [GROC_HOME],
+    interactive: ['grok'],
     promptPrefix: '',
     trustFlags: [],
-    headless: ['-p', '--output-format', 'plain'],
+    headless: ['--output-format', 'plain', '--reasoning-effort', 'low', '--max-turns', '1', '-p'],
     resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
-    limitPatterns: [
-      'rate.?limit', 'usage limit', 'quota', 'too many requests',
-      'limit reached', 'spending limit', 'insufficient', 'credits',
-    ],
+    limitPatterns: [...LIMIT_PATTERNS],
     store: { kind: 'sqlite' },
   },
   claude: {
@@ -81,10 +90,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     headless: ['-p', '--output-format', 'text'],
     resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
-    limitPatterns: [
-      'rate.?limit', 'usage limit', 'quota', 'too many requests',
-      'limit reached', 'spending limit', 'insufficient', 'session limit',
-    ],
+    limitPatterns: [...LIMIT_PATTERNS],
     store: { kind: 'jsonl' },
   },
 };
@@ -99,7 +105,20 @@ export const WARN_THRESHOLD = 15_000;
 export const CURSOR_META_SCAN_CAP = 2000;
 
 export function kalagaHome(): string {
-  return process.env.KALA_HOME ?? path.join(os.homedir(), '.kala');
+  const env = process.env.KALA_HOME?.trim();
+  return env ? path.resolve(env) : path.join(os.homedir(), '.kala');
+}
+
+/** Create the per-user directory (0700). Refuses a symlinked home. */
+export function ensureKalagaHome(): string {
+  const dir = kalagaHome();
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink()) throw new Error(`refusing to use kalaga home: ${dir} is a symlink`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 export function stateFile(repoDir: string): string {
@@ -197,8 +216,38 @@ export function resolveExecutable(cmd: string): string | null {
       }
     }
   }
+  if (!r && cmd === 'grok') r = grokHomeFallback();
   resolvedCache.set(cmd, r);
   return r;
+}
+
+function grokHomeFallback(): string | null {
+  const base = path.join(os.homedir(), '.grok', 'bin', 'grok');
+  const direct = realIfRunnable(base);
+  if (direct) return direct;
+  if (process.platform === 'win32') {
+    for (const ext of ['.exe', '.cmd', '.bat']) {
+      const hit = realIfRunnable(base + ext);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** On Windows, npm `.cmd` shims cannot be spawn()'d with shell:false
+ *  (EINVAL / CVE-2024-27980). Unwrap the shim's `%~dp0%\\...js` target and
+ *  run it with the current Node. Other platforms return the path unchanged. */
+export function resolveSpawnTarget(resolvedPath: string, args: string[], platform = process.platform): { file: string; args: string[] } {
+  if (platform !== 'win32') return { file: resolvedPath, args };
+  const p = path.win32;
+  const ext = p.extname(resolvedPath).toLowerCase();
+  if (ext !== '.cmd' && ext !== '.bat') return { file: resolvedPath, args };
+  let text = '';
+  try { text = fs.readFileSync(resolvedPath, 'utf8'); } catch { return { file: resolvedPath, args }; }
+  const m = text.match(/"%(?:~)?dp0%\\([^"]+\.js)"/i);
+  if (!m) return { file: resolvedPath, args };
+  const scriptPath = p.resolve(p.dirname(resolvedPath), m[1]);
+  return { file: process.execPath, args: [scriptPath, ...args] };
 }
 
 /** SEC-001 C1–C3: the ONE place that maps a repo dir to Claude's on-disk

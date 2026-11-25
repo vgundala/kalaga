@@ -2,11 +2,12 @@
 // optionally enriched by a live-ask of the agent at a chosen seam.
 // Shape mirrors the user's .session_state.yaml protocol so any agent that
 // already reads that file reads this one too.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { stateFile } from '../config.ts';
 import { isValidSessionId } from '../util/sessionid.ts';
-import { toYaml } from '../util/yaml.ts';
+import { consumeIndentedBlock, isYamlBlockIndicator, parseYamlInlineList, parseYamlScalar, renderYamlBlock, toYaml } from '../util/yaml.ts';
 
 export interface SessionRecord {
   id: string;        // vendor-native resume token (Claude: uuid, no .jsonl)
@@ -86,7 +87,7 @@ function parseSessions(raw: string): Record<string, SessionRecord | undefined> {
     if (am) { agent = am[1]; out[agent] = undefined; continue; }
     const kv = agent && line.match(/^    (id|at):\s*(.+)$/);
     if (kv) {
-      const val = kv[2].replace(/^"|"$/g, '');
+      const val = parseYamlScalar(kv[2]);
       if (kv[1] === 'id' && !isValidSessionId(val)) {
         // Drop poisoned / flag-shaped ids — do not keep a partial record.
         delete out[agent];
@@ -102,31 +103,74 @@ function parseSessions(raw: string): Record<string, SessionRecord | undefined> {
 /** Naive but robust YAML reader for the subset we write. Good enough for our
  *  own files; if the user hand-edits it into something fancy we fall back to
  *  blank state rather than crashing. */
+const SCHEMA_KEYS = new Set([
+  'goal', 'status', 'owner', 'branch', 'updated', 'modified_files',
+  'negative_constraints', 'done', 'next_step', 'notes', 'sessions',
+]);
+const LIST_KEYS = new Set(['modified_files', 'negative_constraints', 'done']);
+
+function normalizeStatus(raw: string | undefined): HandoffState['status'] {
+  if (raw === 'COMPLETED' || raw === 'BLOCKED' || raw === 'IN_PROGRESS') return raw;
+  if (raw === 'DONE') return 'COMPLETED';
+  return 'IN_PROGRESS';
+}
+
+function refuseSymlink(p: string, what: string): boolean {
+  try {
+    if (fs.lstatSync(p).isSymbolicLink()) throw new Error(`refusing to ${what}: ${p} is a symlink`);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw e;
+  }
+}
+
 export function loadState(repoDir: string): HandoffState | null {
   const f = stateFile(repoDir);
+  const dir = path.dirname(f);
+  if (!refuseSymlink(dir, 'read state')) return null;
+  if (!refuseSymlink(f, 'read state')) return null;
   let raw: string;
   try { raw = fs.readFileSync(f, 'utf8'); } catch { return null; }
   try {
     const top: Record<string, string> = {};
     const lists: Record<string, string[]> = { modified_files: [], negative_constraints: [], done: [] };
     let cur: string | null = null;
-    for (const line of raw.split('\n')) {
+    let saw = false;
+    const lines = raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       if (/^\s*#/.test(line) || !line.trim()) continue;
       const li = line.match(/^\s*-\s*(.*)$/);
-      if (li && cur) { lists[cur].push(li[1].replace(/^"|"$/g, '')); continue; }
+      if (li && cur && lists[cur]) { lists[cur].push(parseYamlScalar(li[1])); continue; }
       const kv = line.match(/^([a-z_]+):\s*(.*)$/);
       if (!kv) { cur = null; continue; }
-      cur = kv[1];
-      const v = kv[2].replace(/^"|"$/g, '');
-      if (lists[kv[1]]) { lists[kv[1]] = (v && v !== '[]') ? [v] : []; }
-      else top[kv[1]] = v;
+      const key = kv[1];
+      if (SCHEMA_KEYS.has(key)) saw = true;
+      cur = key;
+      const block = isYamlBlockIndicator(kv[2]);
+      if (block) {
+        const consumed = consumeIndentedBlock(lines, i + 1);
+        const text = renderYamlBlock(consumed.lines, block.style, block.strip);
+        if (LIST_KEYS.has(key)) lists[key] = text ? text.split('\n').filter((x) => x.length > 0) : [];
+        else top[key] = text;
+        cur = null;
+        i = consumed.next - 1;
+        continue;
+      }
+      const inline = parseYamlInlineList(kv[2]);
+      if (inline && LIST_KEYS.has(key)) { lists[key] = inline.filter((x) => x !== ''); cur = null; continue; }
+      const v = parseYamlScalar(kv[2]);
+      if (LIST_KEYS.has(key)) { lists[key] = v && v !== '[]' ? [v] : []; }
+      else top[key] = v;
     }
+    if (!saw) return null;
     const orNull = (v: string | undefined) => (v && v !== 'null' ? v : null);
     const owner = orNull(top.owner);
     const s: HandoffState = {
       goal: top.goal ?? '',
-      status: (top.status as HandoffState['status']) ?? 'IN_PROGRESS',
-      // Audit: owner is interpolated into the handoff prompt — only known
+      status: normalizeStatus(top.status),
+      // owner is interpolated into the handoff prompt — only known
       // agent keys are trustworthy; anything else (poisoned state) → null.
       owner: owner && ['agy', 'cursor', 'grok', 'claude'].includes(owner) ? owner : null,
       branch: orNull(top.branch),
@@ -138,9 +182,9 @@ export function loadState(repoDir: string): HandoffState | null {
       notes: top.notes ?? '',
       sessions: parseSessions(raw),
     };
-    if (!s.goal) return null;
     return s;
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && /symlink/.test(e.message)) throw e;
     return null;
   }
 }
@@ -184,9 +228,10 @@ export function saveState(repoDir: string, s: HandoffState): void {
     notes: s.notes,
     sessions,
   });
-  const tmp = path.join(dir, `.${path.basename(f)}.${process.pid}.tmp`);
-  fs.writeFileSync(tmp, out, { mode: 0o600 });
-  fs.renameSync(tmp, f);
+  const tmp = path.join(dir, `.${path.basename(f)}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  fs.writeFileSync(tmp, out, { mode: 0o600, flag: 'wx' });
+  try { fs.renameSync(tmp, f); }
+  catch (e) { try { fs.unlinkSync(tmp); } catch { /* already gone */ } throw e; }
 }
 
 /** Merge a partial update into the current state (or a blank one), bumping

@@ -29,7 +29,7 @@ export function interpretPickAnswer(
   opts: { stayDefault?: boolean; hasDead: boolean; recCount: number; stdinIsTTY: boolean },
 ): 'stay' | 'wait' | number {
   const n = raw.trim().toLowerCase();
-  if (n === 'q' || n === 'e') return 'stay';
+  if (n === 'q' || n === 'e' || n === 'n' || n === 'no' || n === 'exit') return 'stay';
   if (n === '') {
     if (!opts.stdinIsTTY || opts.stayDefault) return 'stay';
     return 0; // Enter = recommendation
@@ -37,8 +37,8 @@ export function interpretPickAnswer(
   if (n === '0' && opts.hasDead) return 'wait';
   const idx = parseInt(n, 10) - 1;
   if (Number.isInteger(idx) && idx >= 0 && idx < opts.recCount) return idx;
-  if (!opts.stdinIsTTY || opts.stayDefault) return 'stay';
-  return 0;
+  // Typos and out-of-range digits stay. They must not launch the top pick.
+  return 'stay';
 }
 
 /** Render + prompt. Returns the user's choice. `dead` is the exhausted
@@ -51,8 +51,14 @@ export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string 
     const u = byKey[r.agent];
     const star = i === 0 ? '*' : ' ';
     const head = u ? `${fmtRemain(u.remaining)} left` : 'unknown';
-    lines.push(`  ${star} [${i + 1}] ${r.agent.padEnd(8)} ${head.padEnd(14)} ${r.reason}`);
+    const caveat = r.agent === 'claude'
+      ? ' · Claude folder trust is Claude\'s, not Kalaga\'s'
+      : '';
+    lines.push(`  ${star} [${i + 1}] ${r.agent.padEnd(8)} ${head.padEnd(14)} ${r.reason}${caveat}`);
   });
+  if (recs.some((r) => r.agent === 'claude')) {
+    lines.push(`  note: if you pick Claude, its own "trust this folder?" prompt may appear first`);
+  }
   if (dead) {
     lines.push(`      [0] ${dead.padEnd(8)} ${'wait for reset'.padEnd(14)} keep it pinned`);
   }
@@ -65,8 +71,10 @@ export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string 
 
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   return new Promise<PickResult>((resolve) => {
-    rl.question('', (ans) => {
-      rl.close();
+    let settled = false;
+    const finish = (ans: string): void => {
+      if (settled) return;
+      settled = true;
       opts.onKey?.(ans);
       const decoded = interpretPickAnswer(ans, {
         stayDefault: opts.stayDefault,
@@ -74,9 +82,19 @@ export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string 
         recCount: recs.length,
         stdinIsTTY: !!process.stdin.isTTY,
       });
-      if (decoded === 'stay') return resolve({ agent: recs[0].agent, wait: false, stay: true });
-      if (decoded === 'wait') return resolve({ agent: dead!, wait: true });
-      return resolve({ agent: recs[decoded].agent, wait: false });
+      if (decoded === 'stay') { resolve({ agent: recs[0]?.agent ?? '', wait: false, stay: true }); return; }
+      if (decoded === 'wait') { resolve({ agent: dead!, wait: true }); return; }
+      resolve({ agent: recs[decoded].agent, wait: false });
+    };
+    // Ctrl+D closes readline without a question callback.
+    rl.once('close', () => {
+      if (settled) return;
+      settled = true;
+      resolve({ agent: recs[0]?.agent ?? '', wait: false, stay: true });
+    });
+    rl.question('', (ans) => {
+      finish(ans);
+      rl.close();
     });
   });
 }

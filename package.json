@@ -1,6 +1,6 @@
 {
   "name": "kalaga",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Kalaga (Telugu: a mix/blending) — local handoff across AI coding CLIs (Antigravity/agy, Cursor, Grok, Claude) when a usage limit hits.",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,7 @@
   },
   "files": [
     "bin/",
-    "src/",
+    "dist/",
     "LICENSE",
     "README.md",
     "SECURITY.md",
@@ -17,7 +17,11 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
+    "build": "node scripts/build-dist.mjs",
+    "prepack": "npm run build",
     "test": "node tests/run.ts",
+    "test:e2e": "bash scripts/qa-e2e-regression.sh --full",
+    "test:e2e:auto": "bash scripts/qa-e2e-regression.sh --auto-only",
     "status": "node src/index.ts status",
     "why": "node src/index.ts why"
   },

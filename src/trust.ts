@@ -10,10 +10,11 @@
 //     - path: /real/path
 //       granted_at: "2026-11-21T17:00:00.000Z"
 //       expires_at: "2026-12-21T17:00:00.000Z"
+import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { ensureKalagaHome, kalagaHome } from './config.ts';
 
 export interface TrustGrant {
   path: string;         // fs.realpathSync of the repo dir
@@ -22,10 +23,6 @@ export interface TrustGrant {
 }
 
 const DEFAULT_TTL_DAYS = 30;
-
-export function kalagaHome(): string {
-  return process.env.KALA_HOME ?? path.join(os.homedir(), '.kala');
-}
 
 function trustFile(): string {
   return path.join(kalagaHome(), 'trust.yaml');
@@ -42,8 +39,12 @@ export function trustTtlDays(): number {
 }
 
 function readGrants(): TrustGrant[] {
+  const f = trustFile();
   try {
-    const raw = fs.readFileSync(trustFile(), 'utf8');
+    const st = fs.lstatSync(f);
+    if (st.isSymbolicLink()) throw new Error(`refusing to read trust: ${f} is a symlink`);
+    if (!st.isFile()) return [];
+    const raw = fs.readFileSync(f, 'utf8');
     const grants: TrustGrant[] = [];
     let cur: Partial<TrustGrant> | null = null;
     for (const line of raw.split('\n')) {
@@ -61,7 +62,10 @@ function readGrants(): TrustGrant[] {
     }
     if (cur) pushGrant(grants, cur);
     return grants;
-  } catch { return []; }
+  } catch (e) {
+    if (e instanceof Error && /symlink/.test(e.message)) throw e;
+    return [];
+  }
 }
 
 function pushGrant(grants: TrustGrant[], g: Partial<TrustGrant>): void {
@@ -73,7 +77,13 @@ function unquote(s: string): string {
 }
 
 function writeGrants(grants: TrustGrant[]): void {
-  fs.mkdirSync(kalagaHome(), { recursive: true });
+  const dir = ensureKalagaHome();
+  const f = trustFile();
+  try {
+    if (fs.lstatSync(f).isSymbolicLink()) throw new Error(`refusing to write trust: ${f} is a symlink`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
   let out = '# kalaga trust grants — path-scoped, explicit first grant.\n';
   out += 'grants:\n';
   for (const g of grants) {
@@ -81,7 +91,10 @@ function writeGrants(grants: TrustGrant[]): void {
     out += `    granted_at: ${JSON.stringify(g.granted_at)}\n`;
     out += `    expires_at: ${JSON.stringify(g.expires_at)}\n`;
   }
-  fs.writeFileSync(trustFile(), out, { mode: 0o600 });
+  const tmp = path.join(dir, `.trust.yaml.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  fs.writeFileSync(tmp, out, { mode: 0o600, flag: 'wx' });
+  try { fs.renameSync(tmp, f); }
+  catch (e) { try { fs.unlinkSync(tmp); } catch { /* already gone */ } throw e; }
 }
 
 function isExpired(g: TrustGrant): boolean {

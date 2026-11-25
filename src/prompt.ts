@@ -4,12 +4,9 @@
 // hostile repo) can write it. Every field is sanitized before it enters the
 // receiving agent's prompt: ASCII controls stripped (except \n \t), length
 // capped, truncated with ….
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import process from 'node:process';
-import { homedir } from 'node:os';
 import { readFileSync } from 'node:fs';
+import { kalagaHome } from './config.ts';
 import type { HandoffState } from './state/state.ts';
 
 export const FIELD_MAX = {
@@ -37,17 +34,24 @@ export const STANDING_ORDERS = [
   'that file plus a short inject.',
 ].join(' ');
 
-/** P2: strip C0 controls (keep \n \t) + DEL, cap length, truncate with ….
- *  Removes 0x00–0x08, 0x0B–0x1F (incl. CR), and 0x7F. Pure, unit-testable. */
+/** Strip terminal escapes, C0/C1 controls (keep \n \t), bidi overrides, and DEL.
+ *  Cap length and truncate with …. Pure, unit-testable.
+ *  ANSI is removed before C0 so ESC does not leave a `[31m` fragment. */
 export function sanitizeHandoffField(s: string, max: number): string {
-  const clean = s.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  const clean = s
+    .replace(/\x1b\[[0-9;?<=>!]*[A-Za-z]/g, '')
+    .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b./g, '')
+    .replace(/[\u0080-\u009f]/g, '')
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
   return clean.length > max ? clean.slice(0, max - 1) + '…' : clean;
 }
 
 /** M2/P3: rich inject only if config has `inject_rich_prompt: true`. */
 export function injectRichPrompt(): boolean {
   try {
-    const p = (process.env.KALA_HOME ?? path.join(homedir(), '.kala')) + '/config.yaml';
+    const p = path.join(kalagaHome(), 'config.yaml');
     const m = readFileSync(p, 'utf8').match(/^inject_rich_prompt:\s*(true|false)\s*$/m);
     return m?.[1] === 'true';
   } catch { return false; }
@@ -57,7 +61,7 @@ export function injectRichPrompt(): boolean {
  *  PROTOCOL mode (pointer + goal + done + next + avoid + standing orders),
  *  still sanitized + capped. `rich` (config inject_rich_prompt: true) adds
  *  notes + modified files on top. Resume launches stay inject-free (FEAT-002). */
-export function handoffInject(s: HandoffState, rich = false): string {
+export function handoffInject(s: HandoffState, rich = false, fromOwner?: string | null): string {
   const st: HandoffState = {
     ...s,
     goal: sanitizeHandoffField(s.goal, FIELD_MAX.goal),
@@ -67,8 +71,19 @@ export function handoffInject(s: HandoffState, rich = false): string {
     negative_constraints: sanitizeHandoffList(s.negative_constraints, FIELD_MAX.negItems, FIELD_MAX.negItem),
     modified_files: sanitizeHandoffList(s.modified_files, FIELD_MAX.pathItems, FIELD_MAX.pathItem),
   };
-  const from = sanitizeHandoffField(st.owner ?? 'another agent', 80);
-  const base = `Kalaga handoff from ${from}. Read .kala/state.yaml in the project root before doing anything.`;
+  // fromOwner omitted: keep the historical "from <owner>" line so 1- and
+  // 2-arg callers stay stable. When the caller passes the previous owner,
+  // name them only if they are not the agent about to start.
+  let base: string;
+  if (fromOwner === undefined) {
+    const from = sanitizeHandoffField(st.owner ?? 'another agent', 80);
+    base = `Kalaga handoff from ${from}. Read .kala/state.yaml in the project root before doing anything.`;
+  } else if (fromOwner && fromOwner !== s.owner) {
+    const from = sanitizeHandoffField(fromOwner, 80);
+    base = `Kalaga handoff from ${from}. Read .kala/state.yaml in the project root before doing anything.`;
+  } else {
+    base = 'Kalaga session context. Read .kala/state.yaml in the project root before doing anything.';
+  }
   const lines = [
     base,
     `Goal: ${st.goal}`,

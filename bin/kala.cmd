@@ -1,3 +1,3 @@
 @echo off
-REM Windows launcher — run Kalaga via Node without a Unix shebang.
+REM Windows launcher. bin\kala prefers dist\index.js and falls back to src\index.ts.
 node "%~dp0kala" %*

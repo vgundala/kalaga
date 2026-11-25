@@ -1,3 +1,10 @@
-#!/usr/bin/env -S node --no-warnings
-// Entry shim. Rename the app → rename this file + the strings in src/index.ts.
-import '../src/index.ts';
+#!/usr/bin/env node
+// Entry shim. A packed install loads dist/; a git checkout falls back to src/.
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const dist = join(here, '..', 'dist', 'index.js');
+const src = join(here, '..', 'src', 'index.ts');
+await import(pathToFileURL(existsSync(dist) ? dist : src).href);

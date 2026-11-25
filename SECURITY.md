@@ -32,8 +32,9 @@ These are accepted residuals — product choices or vendor limits, not forgotten
 2. **Child environment.** Interactive and live-ask children inherit full `process.env` (API keys, tokens already in your shell).
 3. **PATH at first resolve.** The first successful lookup of `claude` / `agy` / etc. is cached as an absolute path for that process. A hostile `PATH` before first use can bind the wrong binary; Kalaga does not hash-pin binaries.
 4. **Vendor stores.** Session tails and sqlite reads are local and bounded; Kalaga does not log stores wholesale. Those directories may still hold secrets belonging to the vendor CLIs.
-5. **Windows smoke.** PATH/`PATHEXT` resolution is implemented (OPS-003); full interactive smoke on Windows/macOS may still be maintainer-waived on a given release — check the changelog.
+5. **Windows smoke.** PATH and `PATHEXT` resolution is implemented. Full interactive smoke on Windows or macOS may still be skipped on a given release. Check the changelog.
 6. **Live-ask.** A headless call to the finishing agent can spend remaining quota and merges only sanitized YAML keys; junk/timeout fails soft.
+7. **Vendor folder trust ≠ Kalaga grant.** A Kalaga path grant only gates Kalaga’s own `trustFlags` (e.g. Cursor `--trust`). Claude Code has no such flag; on a directory it has not accepted yet it still shows its own “trust this folder?” prompt. Kalaga prints a one-line caveat before launching Claude so that is expected.
 
 ## Threat notes for people who fork or point agents at this repo
 

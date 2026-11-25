@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.7.0 — 2026-11-25
+
+Soft-launch release: packaging for npm installs, handoff protocol hardening from the GTM audit, Antigravity session discovery, and documented vendor seams.
+
+### Packaging
+
+- Packed installs ship plain JavaScript in `dist/` (`npm run build`, and `prepack` before `npm pack`). `bin/kala` loads that build and falls back to TypeScript in a git checkout.
+- Windows `.cmd` shims spawn Node with `shell: false`. `grok` resolves from `PATH` first.
+
+### Handoff / state
+
+- Handoff YAML round-trips quotes, newlines, block scalars, and flow lists. An empty `goal` no longer drops the file. `status: DONE` loads as `COMPLETED`.
+- Live-ask waits 15 seconds, resumes a fresh session on `kala switch`, passes trust flags when granted, and is skipped after a limit exit.
+- Handoff prompts name the previous agent. Takers clear `BLOCKED`, run post-exit capture, and stay within an 8-hop cap.
+- `kala init` does not overwrite `.kala/state.yaml` unless `--force` is set. Git porcelain `-z` keeps leading-space paths and rename destinations.
+
+### Sessions / ledger
+
+- Antigravity (`agy`) session ids come from `~/.gemini/antigravity-cli` when the conversation DB exists (resume / live-ask). Tokens stay unset.
+- Claude and Grok headroom are `[logged]`; Cursor is `[est.]`. Grok JSON usage deducts cached reads and honors a 5-hour window.
+- Limit phrases are more specific; clean exits ignore long prose false positives. Claude tails skip user/tool payloads.
+
+### UX / security
+
+- `-v` / `--version`, `--force`, and `--strict-state` work in any argument position. `kala state goal` with no text prints the field. Picker answers `n`, `no`, `exit`, and out-of-range numbers stay.
+- Claude folder trust is noted in the picker and on launch (Down then Enter on a new folder).
+- `kala status` strips terminal escapes. State and trust files refuse symlinks and are replaced atomically (`0600`).
+
+### Docs / QA
+
+- README **Known vendor seams**. Help no longer claims agy ids are missing from disk.
+- E2E harness (`npm run test:e2e` / `test:e2e:auto`), CI auto lane, GTM audit record, and live-build stress report under `docs/guides/`.
+
 ## 0.6.3 — 2026-11-24
 
 - Removed optional `ceilings:` from `~/.kala/config.yaml`. Token headroom uses

@@ -7,7 +7,7 @@ Maintenance is **best-effort** (no SLA). Bug reports are welcome. Feature ideas 
 ## Before you change code
 
 1. Read [SECURITY.md](SECURITY.md).
-2. For behavioral or security-sensitive changes, skim [ARCH-001](docs/specs/ARCH-001-product-architecture.v1.md) and [SEC-001](docs/specs/SEC-001-security-remediation.v1.md) so you do not violate product invariants.
+2. For behavioral or security-sensitive changes, skim the [architecture spec](docs/specs/ARCH-001-product-architecture.v1.md) and the [security spec](docs/specs/SEC-001-security-remediation.v1.md) so you do not violate product invariants.
 3. Do not add runtime `dependencies` or `devDependencies` without a clear architecture reason (Kalaga is zero-dep by design).
 
 You do **not** need to follow the internal spec → CERT workflow to send a PR. That process is optional for maintainers ([docs/SPEC_PROCESS.md](docs/SPEC_PROCESS.md); historical certs in [docs/specs/history/](docs/specs/history/)).

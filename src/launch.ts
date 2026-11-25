@@ -7,11 +7,38 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveExecutable, claudeSessionFiles, claudeProjectDir, tailBytes, CURSOR_META_SCAN_CAP } from './config.ts';
+import { resolveExecutable, resolveSpawnTarget, claudeSessionFiles, claudeProjectDir, tailBytes, CURSOR_META_SCAN_CAP } from './config.ts';
 import type { AgentConfig } from './config.ts';
 import { isValidSessionId } from './util/sessionid.ts';
 
 export { isValidSessionId };
+
+/** Claude owns its own workspace-trust dialog. Kalaga's path grant does not
+ *  suppress it (claude has no trustFlags). Warn before launch so a first-time
+ *  "trust this folder?" prompt reads as expected, not a Kalaga bug. */
+export function noteClaudeFolderTrust(agent: AgentConfig, repoDir: string = process.cwd()): void {
+  if (agent.key !== 'claude') return;
+  if (!fs.existsSync(claudeProjectDir(repoDir))) {
+    console.error(
+      "kalaga: Claude defaults to 'No, exit' on a new folder. Press Down, then Enter, to trust it — that's Claude's prompt, not Kalaga's.",
+    );
+    return;
+  }
+  console.error(
+    "kalaga: Claude may ask you to trust this folder the first time — that's Claude's prompt, not Kalaga's. Choose Yes to continue.",
+  );
+}
+
+function spawnAgent(resolved: string, args: string[], repoDir: string, key: string): Promise<number> {
+  const target = resolveSpawnTarget(resolved, args);
+  return new Promise<number>((resolve) => {
+    const child = spawn(target.file, target.args, {
+      cwd: repoDir, stdio: 'inherit', env: process.env, shell: false,
+    });
+    child.on('error', (e) => { console.error(`kalaga: failed to start ${key}: ${e.message}`); resolve(127); });
+    child.on('close', (code) => resolve(code ?? 0));
+  });
+}
 
 /** Spawn the agent with full TTY and the handoff prompt as initial prompt.
  *  Blocks until it exits; returns its exit code.
@@ -28,17 +55,14 @@ export function runAgent(agent: AgentConfig, repoDir: string, initialPrompt: str
       resolve(127);
     });
   }
+  noteClaudeFolderTrust(agent, repoDir);
   const trustArgs = trust && agent.trustFlags.length ? agent.trustFlags : [];
-  const argv = [resolved, ...trustArgs];
+  const args = [...trustArgs];
   if (initialPrompt) {
-    if (agent.promptPrefix) argv.push(agent.promptPrefix, initialPrompt);
-    else argv.push(initialPrompt);
+    if (agent.promptPrefix) args.push(agent.promptPrefix, initialPrompt);
+    else args.push(initialPrompt);
   }
-  return new Promise<number>((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd: repoDir, stdio: 'inherit', env: process.env });
-    child.on('error', (e) => { console.error(`kalaga: failed to start ${agent.key}: ${e.message}`); resolve(127); });
-    child.on('close', (code) => resolve(code ?? 0));
-  });
+  return spawnAgent(resolved, args, repoDir, agent.key);
 }
 
 // ---------- FEAT-002: session capture + resume ----------
@@ -80,7 +104,10 @@ export async function sessionFresh(agent: AgentConfig, repoDir: string, rec: { i
     } catch { /* fail open */ }
     return true; // artifact check inconclusive → let vendor decide
   }
-  // grok (sqlite best-effort) and agy (no store): time check only
+  if (agent.key === 'agy') {
+    return fs.existsSync(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'conversations', `${rec.id}.db`));
+  }
+  // grok (sqlite best-effort): time check + optional row
   try {
     if (agent.key === 'grok') {
       const { DatabaseSync } = await import('node:sqlite');
@@ -105,14 +132,10 @@ export async function resumeAgent(agent: AgentConfig, repoDir: string, id: strin
     console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);
     return 127;
   }
+  noteClaudeFolderTrust(agent, repoDir);
   const trustArgs = trust && agent.trustFlags.length ? agent.trustFlags : [];
-  const argv = [resolved, ...trustArgs, ...resumeArgv(agent, id)];
   process.stderr.write(`kalaga → resume ${agent.key} (${id})\n`);
-  return new Promise<number>((resolve) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd: repoDir, stdio: 'inherit', env: process.env });
-    child.on('error', (e) => { console.error(`kalaga: failed to start ${agent.key}: ${e.message}`); resolve(127); });
-    child.on('close', (code) => resolve(code ?? 0));
-  });
+  return spawnAgent(resolved, [...trustArgs, ...resumeArgv(agent, id)], repoDir, agent.key);
 }
 
 // ---------- session-log tails: the raw text the trap scans after exit ----------
@@ -130,15 +153,57 @@ function tailFile(p: string): string {
   } catch { return ''; }
 }
 
+/** Assistant text and error strings from a Claude JSONL tail. User prompts
+ *  and tool_result file payloads are skipped. Non-JSON lines pass through. */
+export function claudePlainFromJsonl(raw: string): string {
+  const parts: string[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let j: Record<string, unknown>;
+    try { j = JSON.parse(trimmed) as Record<string, unknown>; } catch { parts.push(line); continue; }
+    const type = typeof j.type === 'string' ? j.type : '';
+    if (type === 'user' || type === 'tool_result') continue;
+    const msg = (j.message && typeof j.message === 'object') ? j.message as Record<string, unknown> : undefined;
+    const role = typeof msg?.role === 'string' ? msg.role : '';
+    if (role === 'user' || role === 'tool') continue;
+    const interesting = type === 'assistant' || role === 'assistant' || type === 'error' || j.is_error === true || typeof j.error === 'string';
+    if (!interesting) continue;
+    const text = pullClaudeText(msg?.content ?? j.error ?? (j.is_error ? j.result : undefined));
+    if (text) parts.push(text);
+  }
+  return parts.join('\n');
+}
+
+function pullClaudeText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => {
+      if (typeof c === 'string') return c;
+      if (!c || typeof c !== 'object') return '';
+      const o = c as Record<string, unknown>;
+      if (o.type === 'tool_result' || o.type === 'tool_use') return '';
+      if (typeof o.text === 'string') return o.text;
+      if (typeof o.content === 'string') return o.content;
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  if (content && typeof content === 'object') {
+    const o = content as Record<string, unknown>;
+    if (typeof o.text === 'string') return o.text;
+    if (typeof o.message === 'string') return o.message;
+  }
+  return '';
+}
+
 /** Return recent raw text from `agent`'s session store for `repoDir`.
- *  Empty string = nothing to scan (agy has no known store). */
+ *  Empty string = nothing to scan. */
 export async function lastSessionText(agent: AgentConfig, repoDir: string): Promise<string> {
   switch (agent.key) {
     case 'claude': {
-      // C3: shared claudeProjectDir/claudeSessionFiles (same C2 disambig as the ledger).
       const files = claudeSessionFiles(repoDir);
       if (!files.length) return '';
-      return tailFile(path.join(claudeProjectDir(repoDir), files[0]));
+      return claudePlainFromJsonl(tailFile(path.join(claudeProjectDir(repoDir), files[0])));
     }
     case 'grok': {
       try {
@@ -175,7 +240,22 @@ export async function lastSessionText(agent: AgentConfig, repoDir: string): Prom
         return fs.readdirSync(bestDir).filter((f) => f.endsWith('.json')).map((f) => tailFile(path.join(bestDir, f))).join('\n');
       } catch { return ''; }
     }
-    case 'agy':
-      return ''; // no known public store
+    case 'agy': {
+      // Conversation body is a binary trajectory DB. Use metadata Preview/Title
+      // only — enough for a weak limit-phrase scan without opening oauth files.
+      try {
+        const lastPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cache', 'last_conversations.json');
+        const map = JSON.parse(fs.readFileSync(lastPath, 'utf8')) as Record<string, unknown>;
+        const sid = map[repoDir];
+        if (typeof sid !== 'string' || !isValidSessionId(sid)) return '';
+        const metaPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cache', 'conversation_metadata.json');
+        const metaRoot = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as {
+          conversations?: Record<string, { summary?: { Title?: string; Preview?: string } }>;
+        };
+        const s = metaRoot.conversations?.[sid]?.summary;
+        const parts = [s?.Title, s?.Preview].filter((x): x is string => typeof x === 'string' && x.length > 0);
+        return parts.join('\n');
+      } catch { return ''; }
+    }
   }
 }

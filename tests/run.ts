@@ -3,6 +3,7 @@
 // throwaway dir under os.tmpdir(), removed on exit. Never touches the real
 // ~/.claude or ~/.kala (HOME + KALA_HOME are redirected for the run).
 import assert from 'node:assert';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +36,11 @@ const trust = await import(`${SRC}/trust.ts`);
 const launch = await import(`${SRC}/launch.ts`);
 const liveask = await import(`${SRC}/liveask.ts`);
 const picker = await import(`${SRC}/picker.ts`);
+const yaml = await import(`${SRC}/util/yaml.ts`);
+const gitmod = await import(`${SRC}/state/git.ts`);
+const ledger = await import(`${SRC}/ledger.ts`);
+const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const BIN = path.join(REPO, 'bin', 'kala');
 
 section('sanitize / inject (P2/P3)');
 await test('strips C0 controls + DEL, keeps \\n \\t', () => {
@@ -195,6 +201,18 @@ await test('revoke --all clears', () => {
 });
 
 section('session capture + resume (FEAT-002)');
+await test('noteClaudeFolderTrust: stderr caveat for claude only', () => {
+  const chunks: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { chunks.push(a.map(String).join(' ')); };
+  try {
+    launch.noteClaudeFolderTrust(cfg.AGENTS.agy);
+    launch.noteClaudeFolderTrust(cfg.AGENTS.cursor);
+    assert.strictEqual(chunks.length, 0, 'non-claude agents stay quiet');
+    launch.noteClaudeFolderTrust(cfg.AGENTS.claude);
+    assert.ok(chunks.length === 1 && /Claude's prompt, not Kalaga/i.test(chunks[0]));
+  } finally { console.error = orig; }
+});
 await test('R2: normalizeSessionId strips claude .jsonl only', () => {
   assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.claude, 'abc-123.jsonl'), 'abc-123');
   assert.strictEqual(launch.normalizeSessionId(cfg.AGENTS.grok, 'sid-xyz'), 'sid-xyz');
@@ -251,6 +269,76 @@ await test('R10: sessionFresh rejects at > 7 days', async () => {
   fs.writeFileSync(path.join(dir, 'x2.jsonl'), '{}');
   assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.claude, repo, { id: 'x2', at: recent }), true);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+await test('agy: resolveAgySession requires last_conversations map + conversations/<id>.db', async () => {
+  const repo = path.join(ROOT, 'agy-repo');
+  fs.mkdirSync(repo, { recursive: true });
+  const sid = 'agy-sess-ok-1';
+  const root = ledger.agyCliRoot(HOME);
+  const cache = path.join(root, 'cache');
+  const conv = path.join(root, 'conversations');
+  fs.mkdirSync(cache, { recursive: true });
+  fs.mkdirSync(conv, { recursive: true });
+  assert.strictEqual(ledger.resolveAgySession(repo, HOME), null);
+  fs.writeFileSync(path.join(cache, 'last_conversations.json'), JSON.stringify({ [repo]: sid }));
+  assert.strictEqual(ledger.resolveAgySession(repo, HOME), null, 'map alone is not enough');
+  fs.writeFileSync(path.join(conv, `${sid}.db`), 'sqlite-stub');
+  const hit = ledger.resolveAgySession(repo, HOME);
+  assert.ok(hit && hit.sid === sid);
+  fs.writeFileSync(path.join(cache, 'conversation_metadata.json'), JSON.stringify({
+    conversations: { [sid]: { last_modified_time: '2026-11-20T12:00:00.000Z', summary: { Title: 'Build', Preview: 'rate limit hit' } } },
+  }));
+  const withMeta = ledger.resolveAgySession(repo, HOME);
+  assert.strictEqual(withMeta?.lastUsed, Date.parse('2026-11-20T12:00:00.000Z'));
+  assert.strictEqual(await ledger.sessionHintFor(cfg.AGENTS.agy, repo), sid);
+  const text = await launch.lastSessionText(cfg.AGENTS.agy, repo);
+  assert.ok(text.includes('Build') && text.includes('rate limit hit'));
+  fs.writeFileSync(path.join(cache, 'last_conversations.json'), JSON.stringify({ [repo]: '--evil' }));
+  assert.strictEqual(ledger.resolveAgySession(repo, HOME), null);
+});
+await test('agy: sessionFresh requires conversations/<id>.db within TTL', async () => {
+  const recent = new Date(Date.now() - 3_600_000).toISOString();
+  const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+  const sid = 'agy-fresh-1';
+  const db = path.join(HOME, '.gemini', 'antigravity-cli', 'conversations', `${sid}.db`);
+  fs.mkdirSync(path.dirname(db), { recursive: true });
+  fs.writeFileSync(db, 'x');
+  assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.agy, ROOT, { id: sid, at: recent }), true);
+  assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.agy, ROOT, { id: sid, at: old }), false);
+  fs.unlinkSync(db);
+  assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.agy, ROOT, { id: sid, at: recent }), false);
+});
+await test('picker: Claude row + note show folder-trust caveat', async () => {
+  const chunks: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array, enc?: BufferEncoding | ((err?: Error | null) => void), cb?: (err?: Error | null) => void) => {
+    chunks.push(String(chunk));
+    if (typeof enc === 'function') enc(null);
+    else if (typeof cb === 'function') cb(null);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const p = picker.pick(
+      [
+        { agent: 'cursor', reason: 'unused this window', score: 2 },
+        { agent: 'claude', reason: 'unused this window', score: 1 },
+      ],
+      [
+        { agent: 'cursor', installed: true, tokens: 0, exact: false, ceiling: 100, remaining: 100, lastUsed: null, sessionHint: null },
+        { agent: 'claude', installed: true, tokens: 0, exact: true, ceiling: 100, remaining: 100, lastUsed: null, sessionHint: null },
+      ],
+      null,
+    );
+    process.stdin.push('q\n');
+    await p;
+    const out = chunks.join('');
+    assert.match(out, /Claude folder trust is Claude's, not Kalaga's/);
+    assert.match(out, /trust this folder\?/);
+    const cursorLine = out.split('\n').find((l) => l.includes('[1] cursor'));
+    assert.ok(cursorLine && !cursorLine.includes('Claude folder trust'));
+  } finally {
+    process.stderr.write = origWrite;
+  }
 });
 await test('R1: sessions round-trip through save/load', () => {
   const r = path.join(ROOT, 'sess-repo');
@@ -345,6 +433,357 @@ await test('off-TTY garbage → stay (not auto-pick)', () => {
 });
 await test('TTY number → index', () => {
   assert.strictEqual(picker.interpretPickAnswer('2', base), 1);
+});
+await test('n / no / exit / out-of-range stay (no auto-launch)', () => {
+  for (const raw of ['n', 'no', 'exit', '9', 'xyz']) {
+    assert.strictEqual(picker.interpretPickAnswer(raw, base), 'stay', raw);
+  }
+});
+
+section('YAML round-trip (quotes, blocks, lists)');
+await test('parseYamlScalar decodes JSON strings and single quotes', () => {
+  assert.strictEqual(yaml.parseYamlScalar('"say \\"hi\\"\\nnext"'), 'say "hi"\nnext');
+  assert.strictEqual(yaml.parseYamlScalar("'it''s fine'"), "it's fine");
+  assert.strictEqual(yaml.parseYamlScalar('"bad \\q escape"'), 'bad \\q escape');
+  assert.deepStrictEqual(yaml.parseYamlInlineList('[]'), []);
+  assert.deepStrictEqual(yaml.parseYamlInlineList('["a", "b"]'), ['a', 'b']);
+});
+await test('10-cycle save/load keeps quotes, backslashes, newlines, lists', () => {
+  const r = path.join(ROOT, 'yaml-cycle');
+  const s = state.blankState(r, 'main');
+  s.goal = 'say "hi": keep it';
+  s.notes = 'path C:\\temp and "quotes"\nline2';
+  s.next_step = 'do: this';
+  s.done = ['a "b"', 'c:\\d'];
+  s.negative_constraints = ["don't double"];
+  state.saveState(r, s);
+  for (let i = 0; i < 10; i++) state.saveState(r, state.loadState(r)!);
+  const back = state.loadState(r)!;
+  assert.strictEqual(back.goal, s.goal);
+  assert.strictEqual(back.notes, s.notes);
+  assert.strictEqual(back.next_step, s.next_step);
+  assert.deepStrictEqual(back.done, s.done);
+  assert.deepStrictEqual(back.negative_constraints, s.negative_constraints);
+  const raw = fs.readFileSync(path.join(r, '.kala', 'state.yaml'), 'utf8');
+  assert.ok(!raw.includes('\\\\\\\\'), 'backslashes did not grow');
+});
+await test('block scalars, flow lists, empty goal, DONE status', () => {
+  const r = path.join(ROOT, 'yaml-block');
+  fs.mkdirSync(path.join(r, '.kala'), { recursive: true });
+  fs.writeFileSync(path.join(r, '.kala', 'state.yaml'), [
+    'goal: ""',
+    'status: DONE',
+    'owner: claude',
+    'branch: null',
+    'updated: "2026-01-01T00:00:00.000Z"',
+    'modified_files: []',
+    'negative_constraints: []',
+    'done: ["a", "b"]',
+    "next_step: 'it''s fine'",
+    'notes: |',
+    '  hello "world"',
+    '  second',
+    'sessions: {}',
+  ].join('\n'));
+  const loaded = state.loadState(r);
+  assert.ok(loaded, 'empty goal with schema keys is kept');
+  assert.strictEqual(loaded!.goal, '');
+  assert.strictEqual(loaded!.status, 'COMPLETED');
+  assert.deepStrictEqual(loaded!.done, ['a', 'b']);
+  assert.strictEqual(loaded!.next_step, "it's fine");
+  assert.ok(loaded!.notes.includes('hello "world"'));
+  assert.ok(loaded!.notes.includes('second'));
+  fs.writeFileSync(path.join(r, '.kala', 'state.yaml'), 'status: WEIRD\ngoal: "kept"\n');
+  assert.strictEqual(state.loadState(r)?.status, 'IN_PROGRESS');
+});
+await test('live-ask: done [] is empty; resume+trust argv; timeout 15s; bad exit dropped', async () => {
+  const empty = liveask.parseLiveAskYaml('done: []\ngoal: keep\n');
+  assert.ok(!empty.done || empty.done.length === 0);
+  assert.strictEqual(empty.goal, 'keep');
+  const flow = liveask.parseLiveAskYaml('done: ["a", "b"]\n');
+  assert.deepStrictEqual(flow.done, ['a', 'b']);
+  const block = liveask.parseLiveAskYaml('notes: |\n  line one\n  line two\n');
+  assert.ok(block.notes?.includes('line one') && block.notes.includes('line two'));
+  assert.strictEqual(liveask.LIVE_ASK_TIMEOUT_MS, 15_000);
+  const argv = liveask.liveAskArgv(cfg.AGENTS.cursor, 'PROMPT', 'sid-1', true);
+  assert.deepStrictEqual(argv.slice(0, 3), ['--resume', 'sid-1', '--trust']);
+  assert.strictEqual(argv[argv.length - 1], 'PROMPT');
+  const fail = path.join(ROOT, 'fail.sh');
+  fs.writeFileSync(fail, '#!/bin/sh\necho BOOM\nexit 1\n');
+  fs.chmodSync(fail, 0o755);
+  const agent = { ...cfg.AGENTS.claude, interactive: [fail], headless: ['-p'], trustFlags: [], resumeByIdPrefix: ['-r'] };
+  assert.strictEqual(await liveask.runLiveAsk(agent, repoDir, 'x', 5000), '');
+});
+
+section('git porcelain, handoff attribution, traps');
+await test('porcelain keeps a leading-space unstaged path; rename takes destination', () => {
+  assert.deepStrictEqual(gitmod.parsePorcelainZ(' M file.txt\0'), ['file.txt']);
+  assert.deepStrictEqual(gitmod.parsePorcelainZ('?? new file.txt\0'), ['new file.txt']);
+  assert.deepStrictEqual(gitmod.parsePorcelainZ('R  renamed.txt\0old.txt\0'), ['renamed.txt']);
+  const r = path.join(ROOT, 'git-repo');
+  fs.mkdirSync(r);
+  const git = (args: string[]): void => { execFileSync('git', args, { cwd: r, stdio: 'ignore' }); };
+  git(['init', '-b', 'main']);
+  git(['config', 'user.email', 't@example.com']);
+  git(['config', 'user.name', 'T']);
+  assert.strictEqual(gitmod.currentBranch(r), 'main');
+  fs.writeFileSync(path.join(r, 'file.txt'), 'a\n');
+  git(['add', 'file.txt']);
+  git(['commit', '-m', 'init']);
+  fs.writeFileSync(path.join(r, 'file.txt'), 'b\n');
+  assert.ok(gitmod.modifiedFiles(r).includes('file.txt'), JSON.stringify(gitmod.modifiedFiles(r)));
+  git(['add', 'file.txt']);
+  git(['commit', '-m', 'edit']);
+  git(['checkout', '--detach', 'HEAD']);
+  const detached = gitmod.currentBranch(r);
+  assert.ok(detached?.startsWith('detached@'), detached ?? '');
+});
+await test('handoffInject fromOwner names the previous agent, not the taker', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.owner = 'cursor';
+  s.goal = 'ship the handoff';
+  s.next_step = 'continue';
+  const fromAgy = handoffInject(s, false, 'agy');
+  assert.ok(fromAgy.includes('Kalaga handoff from agy'));
+  assert.ok(!fromAgy.includes('from cursor'));
+  const same = handoffInject(s, false, 'cursor');
+  assert.ok(same.startsWith('Kalaga session context.'));
+  assert.ok(!same.includes('from cursor'));
+  assert.ok(handoffInject(s, false, null).startsWith('Kalaga session context.'));
+  assert.ok(handoffInject(s, false).includes('Kalaga handoff from cursor'));
+});
+await test('sanitize strips ANSI, C1, and bidi', () => {
+  const out = sanitizeHandoffField('a\u202eb\u009bc\x1b[31mD\x1b]0;title\x07e', 100);
+  assert.strictEqual(out, 'abcDe');
+});
+await test('clean exit ignores a long prose false positive; explicit phrase still hits', () => {
+  const prose = `${'word '.repeat(80)} the quota for this design ${'word '.repeat(80)}`;
+  assert.ok(prose.length > 600);
+  assert.strictEqual(scanChunk(prose, cfg.AGENTS.claude, 0), null);
+  const buried = `${'a'.repeat(400)} usage limit ${'b'.repeat(400)}`;
+  const hit = scanChunk(buried, cfg.AGENTS.claude, 0);
+  assert.ok(hit);
+  assert.ok(hit!.line.length <= 200);
+  assert.ok(hit!.line.includes('usage limit'));
+});
+await test('claude tail skips user/tool payloads', async () => {
+  const repo = path.join(ROOT, 'claude-tail');
+  fs.mkdirSync(repo);
+  const dir = cfg.claudeProjectDir(repo);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 's.jsonl'), [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'please ignore the usage limit in this prompt' } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file read quota exceeded' }] } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'all good, no limit here' }] } }),
+  ].join('\n') + '\n');
+  const text = await launch.lastSessionText(cfg.AGENTS.claude, repo);
+  assert.ok(text.includes('all good'));
+  assert.ok(!text.includes('usage limit'));
+  assert.ok(!text.includes('quota exceeded'));
+});
+await test('grok token total is not summed on top of input and output', () => {
+  const text = 'input tokens: 100\noutput tokens: 40\ntotal tokens: 140\n';
+  assert.strictEqual(ledger.parseGrokTokenTotal(text), 140);
+  assert.strictEqual(ledger.parseGrokTokenTotal('input tokens: 10\noutput tokens: 5\n'), 15);
+});
+await test('grok JSON usage deducts cachedReadTokens, honors 5h window, and normalizes epoch seconds', () => {
+  const now = Date.parse('2026-11-24T20:00:00Z');
+  const json = JSON.stringify({
+    sessionId: '01a20f1b-2c82-7242-a891-34fe425d231e',
+    updatedAt: '2026-11-24T19:54:52.607107235+00:00',
+    session: { inputTokens: 517508, outputTokens: 27025, cachedReadTokens: 424448, totalTokens: 544533 },
+    turns: [
+      { turnNumber: 1, endedAt: '2026-11-24T10:00:00Z', inputTokens: 50000, outputTokens: 2000, cachedReadTokens: 40000, totalTokens: 52000 },
+      { turnNumber: 2, endedAt: '2026-11-24T19:54:52Z', inputTokens: 517508, outputTokens: 27025, cachedReadTokens: 424448, totalTokens: 544533 },
+    ],
+  });
+  assert.strictEqual(ledger.parseGrokTokenTotal(json, now), 120085);
+  assert.strictEqual(ledger.normalizeEpochMs(1_795_549_692), 1_795_549_692_000);
+  assert.strictEqual(ledger.normalizeEpochMs(1_795_549_692_000), 1_795_549_692_000);
+  const grokArgv = liveask.liveAskArgv(cfg.AGENTS.grok, 'SUMMARIZE', 'sid-1');
+  assert.strictEqual(grokArgv.at(-2), '-p');
+  assert.strictEqual(grokArgv.at(-1), 'SUMMARIZE');
+  assert.ok(grokArgv.includes('--reasoning-effort'));
+});
+await test('Windows .cmd shim unwraps to node + script', () => {
+  const dir = path.join(ROOT, 'shim');
+  fs.mkdirSync(dir);
+  const cmd = path.join(dir, 'kala.cmd');
+  fs.writeFileSync(cmd, '@echo off\r\n"%~dp0%\\dist\\index.js" %*\r\n');
+  const hit = cfg.resolveSpawnTarget(cmd, ['status'], 'win32');
+  assert.strictEqual(hit.file, process.execPath);
+  assert.ok(hit.args[0].replace(/\\/g, '/').endsWith('dist/index.js'), hit.args[0]);
+  assert.deepStrictEqual(hit.args.slice(1), ['status']);
+  const plain = cfg.resolveSpawnTarget('/usr/bin/claude', ['-p'], 'linux');
+  assert.deepStrictEqual(plain, { file: '/usr/bin/claude', args: ['-p'] });
+});
+await test('noteClaudeFolderTrust: new folder says Down then Enter', () => {
+  const chunks: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { chunks.push(a.map(String).join(' ')); };
+  try {
+    const missing = path.join(ROOT, 'no-claude');
+    fs.mkdirSync(missing);
+    launch.noteClaudeFolderTrust(cfg.AGENTS.claude, missing);
+    assert.match(chunks[0], /No, exit/);
+    assert.match(chunks[0], /Down/);
+    fs.mkdirSync(cfg.claudeProjectDir(missing), { recursive: true });
+    launch.noteClaudeFolderTrust(cfg.AGENTS.claude, missing);
+    assert.match(chunks[1], /Choose Yes/);
+  } finally { console.error = orig; }
+});
+
+section('KALA_HOME, symlinks, packaged CLI');
+await test('KALA_HOME blank falls back to ~/.kala', () => {
+  const prev = process.env.KALA_HOME;
+  try {
+    process.env.KALA_HOME = '';
+    assert.strictEqual(cfg.kalagaHome(), path.join(os.homedir(), '.kala'));
+    process.env.KALA_HOME = '   ';
+    assert.strictEqual(cfg.kalagaHome(), path.join(os.homedir(), '.kala'));
+    assert.ok(!cfg.configPath().startsWith('/config.yaml'));
+  } finally {
+    if (prev === undefined) delete process.env.KALA_HOME;
+    else process.env.KALA_HOME = prev;
+  }
+});
+await test('symlink state.yaml and trust.yaml are refused', () => {
+  const r = path.join(ROOT, 'sym-load');
+  fs.mkdirSync(path.join(r, '.kala'), { recursive: true });
+  const victim = path.join(ROOT, 'secret-state.yaml');
+  fs.writeFileSync(victim, 'goal: "pwned"\n');
+  fs.symlinkSync(victim, path.join(r, '.kala', 'state.yaml'));
+  assert.throws(() => state.loadState(r), /symlink/);
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'goal: "pwned"\n');
+
+  const trustPath = path.join(KALA, 'trust.yaml');
+  const backup = fs.existsSync(trustPath) ? fs.readFileSync(trustPath) : null;
+  const trustVictim = path.join(ROOT, 'trust-victim.yaml');
+  fs.writeFileSync(trustVictim, 'ORIGINAL');
+  if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
+  fs.symlinkSync(trustVictim, trustPath);
+  try {
+    assert.throws(() => trust.recordTrustGrant(repoDir), /symlink/);
+    assert.strictEqual(fs.readFileSync(trustVictim, 'utf8'), 'ORIGINAL');
+  } finally {
+    fs.unlinkSync(trustPath);
+    if (backup) fs.writeFileSync(trustPath, backup, { mode: 0o600 });
+  }
+});
+
+function runKala(args: string[], cwd: string): { status: number | null; stdout: string; stderr: string } {
+  const res = spawnSync(process.execPath, [BIN, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+await test('build dist and npm pack runs as plain JS', () => {
+  execFileSync(process.execPath, ['scripts/build-dist.mjs'], { cwd: REPO, stdio: 'ignore' });
+  const built = fs.readFileSync(path.join(REPO, 'dist', 'index.js'), 'utf8');
+  assert.ok(!built.includes("from './config.ts'"));
+  assert.ok(built.includes("from './config.js'") || built.includes('from "./config.js"'));
+  const packDir = path.join(ROOT, 'pack');
+  fs.mkdirSync(packDir);
+  const listed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
+    cwd: REPO, encoding: 'utf8',
+  }).trim().split('\n').pop()!;
+  const extract = path.join(ROOT, 'nm');
+  fs.mkdirSync(path.join(extract, 'node_modules'), { recursive: true });
+  execFileSync('tar', ['-xzf', path.join(packDir, listed), '-C', path.join(extract, 'node_modules')]);
+  fs.renameSync(path.join(extract, 'node_modules', 'package'), path.join(extract, 'node_modules', 'kalaga'));
+  const installed = path.join(extract, 'node_modules', 'kalaga');
+  assert.ok(fs.existsSync(path.join(installed, 'dist', 'index.js')));
+  assert.ok(!fs.existsSync(path.join(installed, 'src', 'index.ts')));
+  const empty = path.join(ROOT, 'empty-ver');
+  fs.mkdirSync(empty, { recursive: true });
+  const ver = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), '--version'], {
+    cwd: empty, encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  assert.strictEqual(ver.status, 0, ver.stderr);
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')) as { version: string };
+  assert.ok(ver.stdout.includes(pkg.version), ver.stdout);
+  assert.ok(!fs.existsSync(path.join(empty, '.kala', 'state.yaml')));
+  const st = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), 'status'], {
+    cwd: empty, encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  assert.strictEqual(st.status, 0, st.stderr);
+  assert.match(st.stdout, /kalaga/);
+});
+await test('--version and unknown flags do not launch or write state', () => {
+  const cwd = path.join(ROOT, 'flag-repo');
+  fs.mkdirSync(cwd);
+  const ver = runKala(['--version'], cwd);
+  assert.strictEqual(ver.status, 0, ver.stderr);
+  assert.match(ver.stdout, /\d+\.\d+\.\d+/);
+  assert.ok(!fs.existsSync(path.join(cwd, '.kala', 'state.yaml')));
+  const bad = runKala(['--foo'], cwd);
+  assert.strictEqual(bad.status, 2);
+  assert.ok(!fs.existsSync(path.join(cwd, '.kala', 'state.yaml')));
+  const dash = runKala(['-x'], cwd);
+  assert.strictEqual(dash.status, 2);
+});
+await test('help: agy session ids from antigravity-cli (not "not captured")', () => {
+  const cwd = path.join(ROOT, 'help-repo');
+  fs.mkdirSync(cwd);
+  const out = runKala(['help'], cwd);
+  assert.strictEqual(out.status, 0, out.stderr);
+  assert.match(out.stdout, /antigravity-cli/);
+  assert.doesNotMatch(out.stdout, /agy session ids are not/i);
+  assert.match(out.stdout, /agy tokens stay unset/i);
+});
+await test('empty kala state goal prints and does not wipe', () => {
+  const cwd = path.join(ROOT, 'goal-keep');
+  fs.mkdirSync(cwd);
+  const s = state.blankState(cwd, null);
+  s.goal = 'keep me please';
+  s.next_step = 'stay';
+  state.saveState(cwd, s);
+  const before = fs.readFileSync(path.join(cwd, '.kala', 'state.yaml'), 'utf8');
+  const out = runKala(['state', 'goal'], cwd);
+  assert.strictEqual(out.status, 0, out.stderr);
+  assert.ok(out.stdout.includes('keep me please'));
+  assert.strictEqual(fs.readFileSync(path.join(cwd, '.kala', 'state.yaml'), 'utf8'), before);
+});
+await test('kala status strips ANSI, C1, and bidi from state fields', () => {
+  const cwd = path.join(ROOT, 'ansi-repo');
+  fs.mkdirSync(cwd);
+  const s = state.blankState(cwd, null);
+  s.goal = 'goal\u202eEVIL';
+  s.next_step = 'next\u009b';
+  s.done = ['did\x1b[31mRED\x1b]0;title\x07'];
+  state.saveState(cwd, s);
+  const out = runKala(['status'], cwd);
+  assert.strictEqual(out.status, 0, out.stderr);
+  assert.ok(!out.stdout.includes('\x1b'), 'no ESC in status');
+  assert.ok(!out.stdout.includes('\u202e'));
+  assert.ok(!out.stdout.includes('\u009b'));
+  assert.match(out.stdout, /\[logged\]|\[est\.\]/);
+});
+await test('init refuses to clobber unless --force; switch --strict-state works before the agent', () => {
+  const cwd = path.join(ROOT, 'init-force');
+  fs.mkdirSync(cwd);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd });
+  const first = runKala(['init'], cwd);
+  assert.strictEqual(first.status, 0, first.stderr);
+  const s = state.loadState(cwd)!;
+  s.goal = 'do not clobber';
+  state.saveState(cwd, s);
+  const second = runKala(['init'], cwd);
+  assert.strictEqual(second.status, 0, second.stderr);
+  assert.match(second.stderr, /pass --force to reset/);
+  assert.strictEqual(state.loadState(cwd)?.goal, 'do not clobber');
+  const forced = runKala(['--force', 'init'], cwd);
+  assert.strictEqual(forced.status, 0, forced.stderr);
+  assert.ok(state.loadState(cwd)?.goal.startsWith('not captured'));
+  const strict = runKala(['switch', '--strict-state', 'cursor'], cwd);
+  assert.strictEqual(strict.status, 0, strict.stderr);
+  assert.match(strict.stderr, /refusing to switch/);
+  assert.notStrictEqual(state.loadState(cwd)?.owner, 'cursor');
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);
