@@ -28,7 +28,7 @@ This spec freezes the architecture so builders harden and extend without redesig
 - Per-repo handoff state at `.kala/state.yaml`
 - Per-user config/trust under `~/.kala/` (or `$KALA_HOME`)
 - Dumb ranking + human picker
-- Exact vs estimated ledger honesty
+- Logged vs estimated ledger honesty (token ceilings are fixed builtins, not config)
 
 **Out of scope (do not build under this baseline):**
 
@@ -71,22 +71,24 @@ User → kala → spawn(agent, TTY inherit)
 |--------|----------------|
 | `bin/kala` | Entry shim only |
 | `src/index.ts` | Commands and orchestration loop |
-| `src/config.ts` | Agent roster, ceilings, paths, install check |
-| `src/launch.ts` | Spawn + session-tail readers |
+| `src/config.ts` | Agent roster, fixed builtin ceilings, paths, install check |
+| `src/launch.ts` | Spawn, resume, session-tail readers |
 | `src/trap.ts` | Limit signature match |
-| `src/ledger.ts` | Per-agent usage / remaining |
+| `src/ledger.ts` | Per-agent usage / remaining (`[logged]` vs `[est.]`) |
 | `src/router.ts` | Rank takers |
 | `src/picker.ts` | Interactive choice |
 | `src/state/*` | Handoff state + git facts |
-| `src/trust.ts` | (SEC-001) path trust grants |
-| `src/util/yaml.ts` | Minimal YAML emit for state we write |
+| `src/liveask.ts` | Headless handoff ask (15s, resume when a fresh session exists) |
+| `src/prompt.ts` | Sanitized handoff inject |
+| `src/trust.ts` | Path trust grants |
+| `src/util/yaml.ts` | Minimal YAML emit and scalar/list/block parse |
 
 ### 3.3 Data planes
 
 | Plane | Location | Trust level |
 |-------|----------|-------------|
 | Handoff state | `<repo>/.kala/state.yaml` | Untrusted input when injected into prompts |
-| User config | `~/.kala/config.yaml` | Trusted local user; ceilings + TTL only |
+| User config | `~/.kala/config.yaml` | Trusted local user; `inject_rich_prompt` and trust TTL. Ceilings are fixed builtins |
 | Trust grants | `~/.kala/trust.yaml` | Trusted local user; path + expiry |
 | Vendor stores | `~/.claude`, `~/.grok`, `~/.cursor`, … | Read-only; may contain secrets — do not log wholesale |
 
@@ -95,7 +97,7 @@ User → kala → spawn(agent, TTY inherit)
 1. Never `shell: true` / string `exec` for agent or git launches — argv arrays only.  
 2. Never pipe the interactive agent TTY for trapping.  
 3. User always confirms the taker (picker); no silent auto-handoff launch.  
-4. Ledger labels `exact` vs estimate honestly.  
+4. Ledger labels `[logged]` vs `[est.]` honestly. Ceilings are fixed builtins.  
 5. Agent keys stay the address space; app rename touches bin + `index.ts` strings only.  
 6. No new runtime npm dependencies without a new ARCH or OPS spec that allows them.
 
@@ -105,7 +107,7 @@ User → kala → spawn(agent, TTY inherit)
 
 | ID | Requirement |
 |----|-------------|
-| A1 | Commands remain: `status`, `why`, `run`, `recover`, `switch`, `state`, `init`, `agents`, bare `kala` start; SEC-001 may add `trust`. |
+| A1 | Commands remain: `status`, `why`, `run`, `recover`, `switch`, `resume`, `state`, `init`, `trust`, `agents`, bare `kala`, and `--version`. |
 | A2 | Limit detection remains store-based via `lastSessionText` + `scanChunk`. |
 | A3 | Handoff file path remains `.kala/state.yaml` relative to repo cwd. |
 | A4 | Spawn uses `child_process.spawn` / `execFileSync` with argv arrays; `cwd = repoDir`; env inherit unless a later SEC spec narrows it. |
@@ -133,10 +135,8 @@ Read-only baseline — no mandatory code changes from ARCH-001 alone. SEC-001 an
 
 ## 7. Deferred
 
-- Live-ask / print-mode capture before death  
-- Headless/`resume` flag usage already stubbed in config  
-- Multi-repo / workspace-root detection beyond `process.cwd()`  
-- Packaging (npm publish, homebrew) — see OPS-001  
+- Multi-repo / workspace-root detection beyond `process.cwd()`
+- Homebrew and a public npm release. `npm run build` already emits `dist/` with `stripTypeScriptTypes` for a packed install. `kala resume` is implemented for captured session ids. Live-ask runs on `kala switch` when a fresh session id exists (15s), and does not run against an agent that just hit a limit.  
 
 ---
 

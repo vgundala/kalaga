@@ -11,7 +11,7 @@ Certification records (pass / waive evidence) live under
 |----|---------|-------|--------|
 | ARCH-001 | [v1](ARCH-001-product-architecture.v1.md) | Product architecture baseline | `locked` |
 | SEC-001 | [v1](SEC-001-security-remediation.v1.md) | Security remediation | `done` |
-| OPS-001 | [v1](OPS-001-share-readiness.v1.md) | Share readiness (early framing) | `superseded` |
+| OPS-001 | [v1](history/OPS-001-share-readiness.v1.md) | Share readiness (early framing) | `superseded` |
 | OPS-001 | [v2](OPS-001-share-readiness.v2.md) | Share readiness | `done` |
 | OPS-002 | [v1](OPS-002-ci.v1.md) | CI for `npm test` | `done` |
 | OPS-003 | [v1](OPS-003-cross-platform.v1.md) | Cross-platform PATH | `done` |

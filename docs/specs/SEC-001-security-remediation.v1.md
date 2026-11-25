@@ -6,7 +6,7 @@
 | **Version** | v1 |
 | **Status** | `done` (CERT-001 pass-with-waivers) |
 | **Date** | 2026-11-21 |
-| **Supersedes** | Informal `docs/SECURITY_REMEDIATION_SPEC.md` (moved here) |
+| **Supersedes** | Informal security notes (the redirect stub was removed; this spec is the record) |
 | **Owner** | Technical lead |
 | **Depends on** | ARCH-001 v1 |
 | **Build priority** | 1 (first handoff) |

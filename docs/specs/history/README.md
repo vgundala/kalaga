@@ -15,5 +15,7 @@ the product.
 | [CERT-007](CERT-007-ops002-v1.v1.md) | OPS-002 v1 |
 | [CERT-TEMPLATE](CERT-TEMPLATE.md) | Template for future maintainer use |
 
-Living requirements stay one level up in [`../`](../) (ARCH, SEC, FEAT, OPS).
+Superseded early share-readiness spec: [OPS-001 v1](OPS-001-share-readiness.v1.md).
+
+Living requirements stay one level up in [`../`](../).
 Optional process notes: [`../../SPEC_PROCESS.md`](../../SPEC_PROCESS.md).
