@@ -620,7 +620,7 @@ await test('grok token total is not summed on top of input and output', () => {
 await test('grok JSON usage deducts cachedReadTokens, honors 5h window, and normalizes epoch seconds', () => {
   const now = Date.parse('2026-11-24T20:00:00Z');
   const json = JSON.stringify({
-    sessionId: '01a20f1b-2c82-7242-a891-34fe425d231e',
+    sessionId: '00000000-0000-4000-8000-000000000002',
     updatedAt: '2026-11-24T19:54:52.607107235+00:00',
     session: { inputTokens: 517508, outputTokens: 27025, cachedReadTokens: 424448, totalTokens: 544533 },
     turns: [
@@ -1792,7 +1792,7 @@ await test('trust: Windows backslash paths round-trip through trust.yaml', () =>
   const trustFile = path.join(KALA, 'trust.yaml');
   const backup = fs.existsSync(trustFile) ? fs.readFileSync(trustFile, 'utf8') : null;
   try {
-    const winPath = 'C:\\Users\\vinay\\repo\\proj';
+    const winPath = 'C:\\Users\\user0\\repo\\proj';
     const future = new Date(Date.now() + 86_400_000).toISOString();
     fs.writeFileSync(
       trustFile,

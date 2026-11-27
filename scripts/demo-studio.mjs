@@ -18,23 +18,31 @@ const DEFAULT_CAPTURE = process.env.KALA_DEMO_CAPTURE || '';
 // Exact byte-length replacements so PTY column geometry & ANSI box borders never shift by 1 byte,
 // while ensuring real emails, home paths, session IDs, and CLI account/tier strings never appear.
 const EXACT_BYTE_SWAPS = [
-  ['gundala@gmail.com', 'account@email.com'],
-  ['/home/vinay', '/home/user0'],
-  ['gundala', 'account'],
-  ['vinay', 'user0'],
   ['(Google AI Pro)', '(CLI Plan Tier)'],
   ['You are currently not signed in.', 'CLI account session check active'],
   ['Signing in...', 'Auth check...'],
   ['[Click here to Upgrade]', '[CLI Account Plan Info]'],
   ['Upgrade for more usage.', 'Account plan telemetry.'],
-  ['f09f192c-842f-4c61-8119-c1e1502090cb', '00000000-0000-4000-8000-000000000001'],
-  ['01a20f1b-2c82-7242-a891-34fe425d231e', '00000000-0000-4000-8000-000000000002'],
 ];
+
+if (process.env.KALA_DEMO_REDACT) {
+  const extra = JSON.parse(process.env.KALA_DEMO_REDACT);
+  if (Array.isArray(extra)) {
+    for (const pair of extra) {
+      if (Array.isArray(pair) && pair.length === 2) EXACT_BYTE_SWAPS.push([String(pair[0]), String(pair[1])]);
+    }
+  }
+}
 
 for (const [from, to] of EXACT_BYTE_SWAPS) {
   if (Buffer.byteLength(from) !== Buffer.byteLength(to)) {
     throw new Error(`Byte swap length mismatch: ${from} vs ${to}`);
   }
+}
+
+function padFixed(seed, len) {
+  if (len <= seed.length) return seed.slice(0, len);
+  return seed + '0'.repeat(len - seed.length);
 }
 
 function scrubBuffer(buf) {
@@ -48,6 +56,17 @@ function scrubBuffer(buf) {
       idx += repl.length;
     }
   }
+  const latin = out.toString('latin1')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '00000000-0000-4000-8000-000000000000')
+    .replace(/(\/(?:home|Users)\/)([A-Za-z0-9._-]{2,32})/g, (_, prefix, user) => prefix + padFixed('user0', user.length))
+    .replace(/\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, (_, local, domain) => {
+      const dot = domain.lastIndexOf('.');
+      const host = dot > 0 ? domain.slice(0, dot) : domain;
+      const tld = dot > 0 ? domain.slice(dot + 1) : '';
+      const newDom = tld ? `${padFixed('example', host.length)}.${padFixed('org', tld.length)}` : padFixed('example', domain.length);
+      return `${padFixed('user', local.length)}@${newDom}`;
+    });
+  out = Buffer.from(latin, 'latin1');
   return out;
 }
 

@@ -72,7 +72,7 @@ Both `npm test` (46 unit checks) and `npm run test:e2e` (30/30 system checks) pa
 
 ### P0-4. `[Packaging]` Dirty git worktree: untracked CI dependency, `.pyc` artifacts, and hardcoded local path
 - **Location:** `.github/workflows/test.yml:22-23`, `.gitignore`, `scripts/live-build-handoff.sh:9`
-- **Mechanism:** `.github/workflows/test.yml` invokes `npm run test:e2e:auto` (`scripts/qa-e2e-regression.sh`), which is untracked. `.gitignore` lacks `__pycache__/` and `*.py[cod]`, and `scripts/live-build-handoff.sh` hardcodes `/home/vinay/Code/playground/daylog`.
+- **Mechanism:** `.github/workflows/test.yml` invokes `npm run test:e2e:auto` (`scripts/qa-e2e-regression.sh`), which is untracked. `.gitignore` lacks `__pycache__/` and `*.py[cod]`, and `scripts/live-build-handoff.sh` hardcodes `/home/<user>/Code/playground/daylog`.
 - **Fix target:** Add `__pycache__/` and `*.py[cod]` to `.gitignore`, remove `tests/e2e/__pycache__/`, default `DAYLOG_ROOT` in `scripts/live-build-handoff.sh` to `$(mktemp -d -t kala-daylog-XXXXXX)`, and ensure all scripts referenced by `package.json` and CI are tracked cleanly.
 
 ---

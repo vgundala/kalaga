@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveExecutable, resolveSpawnTarget, claudeSessionFiles, claudeProjectDir, tailBytes, CURSOR_META_SCAN_CAP } from './config.ts';
+import { resolveExecutable, resolveSpawnTarget, claudeSessionFiles, claudeProjectDir, CURSOR_META_SCAN_CAP } from './config.ts';
 import type { AgentConfig } from './config.ts';
 import { isValidSessionId } from './util/sessionid.ts';
 
