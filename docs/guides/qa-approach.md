@@ -30,7 +30,7 @@ Release acceptance requires: all applicable **S-** and **F-** tests Pass or Bloc
 
 | Requirement | Detail |
 |-------------|--------|
-| Runtime | Node.js ≥ 24 |
+| Runtime | Node.js ≥ 22.18 (LTS 22 / 24 / 26) |
 | Terminal | Interactive TTY |
 | Project under test | Throwaway git repository |
 | Isolation (optional) | `KALA_HOME` set to a dedicated directory |

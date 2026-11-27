@@ -12,12 +12,24 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24", "26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node-version }}
       - name: Run test suite
         run: npm test
       - name: Real-agent E2E (auto / no TTY)
         run: npm run test:e2e:auto
+      - name: Packaged install smoke
+        run: |
+          npm run build
+          TARBALL=$(npm pack --pack-destination /tmp | tail -n 1)
+          npm install -g --prefix /tmp/kala-ci-prefix "/tmp/$TARBALL"
+          /tmp/kala-ci-prefix/bin/kala --version
+          KALA_HOME=/tmp/kala-ci-home /tmp/kala-ci-prefix/bin/kala status
+          echo '{}' | /tmp/kala-ci-prefix/bin/kala _hook --agent claude --event PostToolUse

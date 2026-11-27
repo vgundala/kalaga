@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Runtime & CI
+
+- Lowered minimum supported Node.js engine to `>=22.18.0` (covering Maintenance LTS 22 alongside 24 and 26) and updated CI (`.github/workflows/test.yml`) to test across Node 22, 24, and 26 including a packaged tarball install smoke test.
+
 ### Continuous checkpointing (FEAT-004 v2, CERT-008)
 
 - New `kala hooks install [--agents claude,agy]`, `kala hooks status`, and `kala hooks uninstall` commands for opt-in, non-destructive project hook wiring (`install` defaults to installed supported CLIs found on `PATH` and errors clearly if none are present, writing `.claude/settings.local.json` and/or `"kalaga-checkpoint"` in `.agents/hooks.json`, with a `.gitignore` check for `.agents/hooks.json` and a missing-binary shell guard for `agy`; `status` isolates per-agent config errors).

@@ -17,13 +17,13 @@ Kalaga is the handoff layer that came out of that. Switching tools by hand means
 | | |
 |---|---|
 | **License** | MIT |
-| **Runtime** | Node.js ≥ 24 |
+| **Runtime** | Node.js ≥ 22.18 (LTS 22 / 24 / 26) |
 | **Agents** | Antigravity (`agy`) · Cursor (`cursor-agent`) · Grok · Claude Code |
 | **Install** | Source symlink / `node bin/kala`, or `npm install` from a packed tarball |
 
 ## Requirements
 
-- [Node.js](https://nodejs.org/) **24 or newer** (git checkouts run TypeScript directly; packed installs use `dist/`)
+- [Node.js](https://nodejs.org/) **22.18 or newer** (LTS 22, 24, or 26; git checkouts run TypeScript directly; packed installs use `dist/`)
 - At least one supported agent CLI on your `PATH`, authenticated as usual for that product
 - A git working tree for the project you are handing off (recommended)
 
@@ -57,7 +57,7 @@ Same as Linux: symlink or alias `bin/kala`, or run `node bin/kala …`.
 ### Verify
 
 ```sh
-node -v          # ≥ v24
+node -v          # ≥ v22.18 (LTS 22 / 24 / 26)
 npm test         # zero-dependency suite; no network
 kala status      # or: node bin/kala status
 ```
@@ -190,7 +190,7 @@ npm run test:e2e:auto # S/R + F-15 — CI-safe, no agent TTY
 npm run test:e2e      # full real-agent E2E (PTY; needs installed CLIs)
 ```
 
-GitHub Actions (`.github/workflows/test.yml`) runs `npm test` and `npm run test:e2e:auto` on Node 24 for pushes and pull requests to `main`. Full real-agent proof: [qa-e2e-regression.md](docs/guides/qa-e2e-regression.md).
+GitHub Actions (`.github/workflows/test.yml`) runs `npm test`, `npm run test:e2e:auto`, and a packaged install smoke on Node 22, 24, and 26 for pushes and pull requests to `main`. Full real-agent proof: [qa-e2e-regression.md](docs/guides/qa-e2e-regression.md).
 
 ## Documentation
 

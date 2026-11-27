@@ -18,7 +18,7 @@ Same seed strings, same step order, same pass/fail rules every run.
 
 ## Prerequisites
 
-- Node.js ≥ 24
+- Node.js ≥ 22.18 (LTS 22 / 24 / 26)
 - This repository checked out
 - For **full** mode: at least two of `agy`, `cursor-agent`, `claude` on `PATH` and authenticated
 - A machine that can allocate a PTY (normal terminal, or the harness’s PTY driver)

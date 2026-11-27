@@ -55,7 +55,7 @@ You can also switch on purpose without waiting for a limit: `kala switch cursor`
 
 ## Getting started
 
-**Prerequisites:** Node.js 24+, and at least one of `agy` / `cursor-agent` / `grok` / `claude` on your `PATH`.
+**Prerequisites:** Node.js 22.18+ (LTS 22 / 24 / 26), and at least one of `agy` / `cursor-agent` / `grok` / `claude` on your `PATH`.
 
 ```sh
 # After cloning this repository

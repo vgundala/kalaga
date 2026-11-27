@@ -507,7 +507,7 @@ function printHelp(): void {
   recorded). Cursor is [est.]. agy tokens stay unset; session ids come from
   ~/.gemini/antigravity-cli when present (resume / live-ask).
 
-  Requires Node ≥ 24. Docs: README.md · SECURITY.md`);
+  Requires Node ≥ 22.18 (LTS 22 / 24 / 26). Docs: README.md · SECURITY.md`);
 }
 
 async function main(): Promise<void> {

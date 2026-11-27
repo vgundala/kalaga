@@ -15,7 +15,7 @@ You do **not** need to follow the internal spec → CERT workflow to send a PR. 
 ## Development
 
 ```sh
-# Node ≥ 24
+# Node ≥ 22.18 (LTS 22 / 24 / 26)
 npm test
 node bin/kala status
 ```
