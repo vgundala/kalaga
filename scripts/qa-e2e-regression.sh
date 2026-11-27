@@ -364,6 +364,65 @@ else
   record "H-03" "Fail" "agy _hook pipe assertion failed (pre=$a_pre stop=$a_stop_go)"
 fi
 
+HOOK_CURSOR_REPO="$RUN_ROOT/hook-cursor"
+mkdir -p "$HOOK_CURSOR_REPO"
+git -C "$HOOK_CURSOR_REPO" init -q
+(cd "$HOOK_CURSOR_REPO" && kala init >/dev/null 2>&1 && kala hooks install --agents claude,cursor >/dev/null 2>&1)
+h04_ok=1
+for i in 1 2 3 4; do
+  out="$(printf '{"workspace_roots":["%s"],"cursor_version":"2026.11.22","tool_use_id":"cu-%d","tool_input":{"file_path":"src/c%d.ts"}}' "$HOOK_CURSOR_REPO" "$i" "$i" | kala _hook --agent cursor --event PostToolUse)" || h04_ok=0
+  [[ "$out" == "{}" ]] || h04_ok=0
+done
+# Cross-vendor overlap: claude hook invoked with cursor_version must no-op when cursor hook is installed
+cu_overlap="$(printf '{"cwd":"%s","cursor_version":"2026.11.22","tool_use_id":"cu-4","tool_input":{"file_path":"src/c4.ts"}}' "$HOOK_CURSOR_REPO" | kala _hook --agent claude --event PostToolUse)" || h04_ok=0
+cu_post5="$(printf '{"workspace_roots":["%s"],"cursor_version":"2026.11.22","tool_use_id":"cu-5","tool_input":{"file_path":"src/c5.ts"}}' "$HOOK_CURSOR_REPO" | kala _hook --agent cursor --event PostToolUse)" || h04_ok=0
+cu_stop_go="$(printf '{"workspace_roots":["%s"],"stop_hook_active":false,"loop_count":0}' "$HOOK_CURSOR_REPO" | kala _hook --agent cursor --event Stop)" || h04_ok=0
+cu_stop_loop="$(printf '{"workspace_roots":["%s"],"stop_hook_active":false,"loop_count":1}' "$HOOK_CURSOR_REPO" | kala _hook --agent cursor --event Stop)" || h04_ok=0
+node -e '
+  const ov = JSON.parse(process.argv[1]);
+  const p5 = JSON.parse(process.argv[2]);
+  const sg = JSON.parse(process.argv[3]);
+  const sl = JSON.parse(process.argv[4]);
+  if (Object.keys(ov).length !== 0) process.exit(1);
+  if (!p5?.additional_context?.includes("[kalaga]")) process.exit(1);
+  if (!sg?.followup_message?.includes("[kalaga]")) process.exit(1);
+  if (Object.keys(sl).length !== 0) process.exit(1);
+' "$cu_overlap" "$cu_post5" "$cu_stop_go" "$cu_stop_loop" 2>"$LOG_DIR/h04.err" || h04_ok=0
+if [[ $h04_ok -eq 1 ]]; then
+  record "H-04" "Pass" "cursor _hook PostToolUse + Stop + loop/overlap guards ok"
+else
+  record "H-04" "Fail" "cursor _hook pipe assertion failed (ov=$cu_overlap post5=$cu_post5 stop=$cu_stop_go loop=$cu_stop_loop)"
+fi
+
+HOOK_GROK_REPO="$RUN_ROOT/hook-grok"
+mkdir -p "$HOOK_GROK_REPO"
+git -C "$HOOK_GROK_REPO" init -q
+(cd "$HOOK_GROK_REPO" && kala init >/dev/null 2>&1 && kala hooks install --agents claude,grok >/dev/null 2>&1)
+h05_ok=1
+for i in 1 2 3 4; do
+  out="$(printf '{"workspaceRoot":"%s","toolUseId":"gk-%d","toolInput":{"file_path":"src/g%d.ts"}}' "$HOOK_GROK_REPO" "$i" "$i" | GROK_HOOK_EVENT=post_tool_use kala _hook --agent grok --event PostToolUse)" || h05_ok=0
+  [[ "$out" == "{}" ]] || h05_ok=0
+done
+gk_overlap="$(printf '{"cwd":"%s","tool_use_id":"gk-4","tool_input":{"file_path":"src/g4.ts"}}' "$HOOK_GROK_REPO" | GROK_HOOK_EVENT=post_tool_use kala _hook --agent claude --event PostToolUse)" || h05_ok=0
+gk_post5="$(printf '{"workspaceRoot":"%s","toolUseId":"gk-5","toolInput":{"file_path":"src/g5.ts"}}' "$HOOK_GROK_REPO" | GROK_HOOK_EVENT=post_tool_use kala _hook --agent grok --event PostToolUse)" || h05_ok=0
+gk_stop_go="$(printf '{"workspaceRoot":"%s","reason":"end_turn","stopHookActive":false}' "$HOOK_GROK_REPO" | GROK_HOOK_EVENT=stop kala _hook --agent grok --event Stop)" || h05_ok=0
+gk_stop_shut="$(printf '{"workspaceRoot":"%s","reason":"shutdown","stopHookActive":false}' "$HOOK_GROK_REPO" | GROK_HOOK_EVENT=stop kala _hook --agent grok --event Stop)" || h05_ok=0
+node -e '
+  const ov = JSON.parse(process.argv[1]);
+  const p5 = JSON.parse(process.argv[2]);
+  const sg = JSON.parse(process.argv[3]);
+  const ss = JSON.parse(process.argv[4]);
+  if (Object.keys(ov).length !== 0) process.exit(1);
+  if (p5?.hookSpecificOutput?.hookEventName !== "PostToolUse" || !p5?.hookSpecificOutput?.additionalContext?.includes("[kalaga]")) process.exit(1);
+  if (sg?.decision !== "block" || !sg?.reason?.includes("[kalaga]")) process.exit(1);
+  if (Object.keys(ss).length !== 0) process.exit(1);
+' "$gk_overlap" "$gk_post5" "$gk_stop_go" "$gk_stop_shut" 2>"$LOG_DIR/h05.err" || h05_ok=0
+if [[ $h05_ok -eq 1 ]]; then
+  record "H-05" "Pass" "grok _hook PostToolUse + Stop + shutdown/overlap guards ok"
+else
+  record "H-05" "Fail" "grok _hook pipe assertion failed (ov=$gk_overlap post5=$gk_post5 stop=$gk_stop_go shut=$gk_stop_shut)"
+fi
+
 # ---------- Interactive / PTY F-chain ----------
 run_pty() {
   local id="$1"; shift

@@ -6,9 +6,10 @@
 
 - Lowered minimum supported Node.js engine to `>=22.18.0` (covering Maintenance LTS 22 alongside 24 and 26) and updated CI (`.github/workflows/test.yml`) to test across Node 22, 24, and 26 including a packaged tarball install smoke test.
 
-### Continuous checkpointing (FEAT-004 v2, CERT-008)
+### Continuous checkpointing (FEAT-004 v2 / v3, CERT-008)
 
-- New `kala hooks install [--agents claude,agy]`, `kala hooks status`, and `kala hooks uninstall` commands for opt-in, non-destructive project hook wiring (`install` defaults to installed supported CLIs found on `PATH` and errors clearly if none are present, writing `.claude/settings.local.json` and/or `"kalaga-checkpoint"` in `.agents/hooks.json`, with a `.gitignore` check for `.agents/hooks.json` and a missing-binary shell guard for `agy`; `status` isolates per-agent config errors).
+- Extended lifecycle checkpoint hooks to all four agents (`claude`, `agy`, `cursor`, `grok`), adding `.cursor/hooks.json` and `.grok/hooks/kalaga-checkpoint.json` install/status/uninstall support, `workspace_roots`/`workspaceRoot` root resolution, Grok teardown `Stop` filtering (`reason: "end_turn"`), and cross-vendor overlap / `tool_use_id` deduplication so coexisting configs never double-count edits.
+- New `kala hooks install [--agents claude,agy,cursor,grok]`, `kala hooks status`, and `kala hooks uninstall` commands for opt-in, non-destructive project hook wiring (`install` defaults to installed supported CLIs found on `PATH` and errors clearly if none are present, with `.gitignore` warnings for machine-local files and a missing-binary shell guard for `agy`; `status` isolates per-agent config errors).
 - New fast-path internal runner (`kala _hook --agent <key> --event <name>`, hidden from `--help`, with fail-open `try/catch` in `bin/kala`) tracking edits and checkpoint staleness in `.kala/.hook-state.json` (atomic `0600`, self-edit skip, mtime/size reset with non-self `PostToolUse` fall-through count, mid-turn cooldown + `editsSinceCheckpoint >= 1` guard on `max_age_minutes`, `Stop` re-entry/termination guards).
 - Optional `hooks:` block in `~/.kala/config.yaml` (`$KALA_HOME` override) for `enabled`, `edit_threshold`, `max_age_minutes`, `cooldown_minutes`, and `timeout_seconds`.
 - Symlink refusal across `.hook-state.json`, `hook-errors.log`, and vendor hook configs; 64 KB stdin cap, staggered 1600ms stdin deadline inside the 2000ms hook deadline, sanitized bounded `<=32 KB` `.kala/hook-errors.log`, and fail-open `{}` + exit `0`.

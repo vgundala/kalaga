@@ -24,7 +24,10 @@ export interface HookState {
   lastNudgeAt: string | null;
   lastStateMtimeMs: number;
   lastStateSize: number;
+  lastToolUseId?: string | null;
 }
+
+const VALID_HOOK_AGENTS = new Set(['claude', 'agy', 'cursor', 'grok']);
 
 export interface HookEvalResult {
   shouldNudge: boolean;
@@ -78,12 +81,13 @@ export function parseHookArgs(argv: string[]): HookArgs | null {
       event = a.slice('--event='.length);
     }
   }
-  if ((agent !== 'claude' && agent !== 'agy') || !event) return null;
+  if (!VALID_HOOK_AGENTS.has(agent) || !event) return null;
   return { agent, event };
 }
 
-/** Resolve project root from payload.cwd -> payload.workspacePaths[0] -> fallbackCwd,
- *  walking up (stopping at .git root or filesystem root) for `.kala/state.yaml`. */
+/** Resolve project root from payload.cwd -> workspaceRoot -> workspace_roots[0] ->
+ *  workspacePaths[0] -> fallbackCwd, walking up (stopping at .git root or
+ *  filesystem root) for `.kala/state.yaml`. */
 export function findRepoRoot(
   payload: Record<string, unknown>,
   fallbackCwd: string = process.cwd(),
@@ -91,6 +95,14 @@ export function findRepoRoot(
   let start = '';
   if (typeof payload.cwd === 'string' && payload.cwd.trim()) {
     start = payload.cwd.trim();
+  } else if (typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim()) {
+    start = payload.workspaceRoot.trim();
+  } else if (
+    Array.isArray(payload.workspace_roots) &&
+    typeof payload.workspace_roots[0] === 'string' &&
+    payload.workspace_roots[0].trim()
+  ) {
+    start = payload.workspace_roots[0].trim();
   } else if (
     Array.isArray(payload.workspacePaths) &&
     typeof payload.workspacePaths[0] === 'string' &&
@@ -135,22 +147,26 @@ function commandTouchesState(cmd: unknown): boolean {
   return /\bkala\s+state\b/.test(cmd) || /(?:^|[\s"'=/\\><;|&`])\.kala[/\\]state\.yaml(?=$|[\s"'`;&|<>])/.test(cmd);
 }
 
-/** FEAT-004 K9: skip counting PostToolUse edits targeting `.kala/state.yaml` or `kala state`. */
+/** FEAT-004 K9/K25: skip counting PostToolUse edits targeting `.kala/state.yaml` or `kala state`. */
 export function isSelfEdit(
   _agent: string,
   event: string,
   payload: Record<string, unknown>,
 ): boolean {
   if (event !== 'PostToolUse') return false;
-  const toolInput = isPlainObject(payload.tool_input) ? payload.tool_input : null;
+  const toolInputs = [
+    isPlainObject(payload.tool_input) ? payload.tool_input : null,
+    isPlainObject(payload.toolInput) ? payload.toolInput : null,
+  ];
   const toolCall = isPlainObject(payload.toolCall) ? payload.toolCall : null;
   const toolArgs = toolCall && isPlainObject(toolCall.args)
     ? toolCall.args
     : (isPlainObject(payload.args) ? payload.args : null);
 
-  if (toolInput) {
-    if (targetsStateFile(toolInput.file_path) || targetsStateFile(toolInput.path)) return true;
-    if (commandTouchesState(toolInput.command)) return true;
+  for (const ti of toolInputs) {
+    if (!ti) continue;
+    if (targetsStateFile(ti.file_path) || targetsStateFile(ti.path)) return true;
+    if (commandTouchesState(ti.command)) return true;
   }
   if (toolArgs) {
     if (
@@ -166,7 +182,54 @@ export function isSelfEdit(
       return true;
     }
   }
-  if (targetsStateFile(payload.file_path) || commandTouchesState(payload.command)) return true;
+  if (targetsStateFile(payload.file_path) || targetsStateFile(payload.path) || commandTouchesState(payload.command)) {
+    return true;
+  }
+  return false;
+}
+
+function extractToolUseId(payload: Record<string, unknown>): string | null {
+  for (const k of ['tool_use_id', 'toolUseId'] as const) {
+    const v = payload[k];
+    if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 128);
+  }
+  return null;
+}
+
+function hasKalagaVendorHook(repoDir: string, vendor: 'cursor' | 'grok'): boolean {
+  const relParts = vendor === 'cursor'
+    ? ['.cursor', 'hooks.json']
+    : ['.grok', 'hooks', 'kalaga-checkpoint.json'];
+  let cur = repoDir;
+  for (const seg of relParts.slice(0, -1)) {
+    cur = path.join(cur, seg);
+    const dst = lstatOrNull(cur);
+    if (!dst || dst.isSymbolicLink() || !dst.isDirectory()) return false;
+  }
+  const file = path.join(repoDir, ...relParts);
+  const fst = lstatOrNull(file);
+  if (!fst || fst.isSymbolicLink() || !fst.isFile()) return false;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    if (vendor === 'cursor') return raw.includes('_hook --agent cursor');
+    return raw.includes('_hook') && (raw.includes('"--agent",') || raw.includes('_hook --agent grok')) && raw.includes('"grok"');
+  } catch {
+    return false;
+  }
+}
+
+function isForeignOverlap(
+  agent: string,
+  repoDir: string,
+  payload: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if ((agent === 'claude' || agent === 'cursor') && typeof env.GROK_HOOK_EVENT === 'string' && env.GROK_HOOK_EVENT.length > 0) {
+    if (hasKalagaVendorHook(repoDir, 'grok')) return true;
+  }
+  if (agent === 'claude' && typeof payload.cursor_version === 'string' && payload.cursor_version.length > 0) {
+    if (hasKalagaVendorHook(repoDir, 'cursor')) return true;
+  }
   return false;
 }
 
@@ -201,11 +264,15 @@ export function loadHookState(repoDir: string): HookState | null {
     const lastStateSize = typeof parsed.lastStateSize === 'number' && Number.isFinite(parsed.lastStateSize) && parsed.lastStateSize >= 0
       ? Math.floor(parsed.lastStateSize)
       : 0;
+    const lastToolUseId = typeof parsed.lastToolUseId === 'string' && parsed.lastToolUseId.trim()
+      ? parsed.lastToolUseId
+      : null;
     return {
       editsSinceCheckpoint: edits,
       lastNudgeAt,
       lastStateMtimeMs,
       lastStateSize,
+      lastToolUseId,
     };
   } catch {
     return null;
@@ -257,6 +324,7 @@ export function evaluateHook(opts: {
   payload: Record<string, unknown>;
   config?: HookConfig;
   nowMs?: number;
+  env?: NodeJS.ProcessEnv;
 }): HookEvalResult {
   const config = opts.config ?? loadHookConfig();
   const nowMs = opts.nowMs ?? Date.now();
@@ -265,9 +333,14 @@ export function evaluateHook(opts: {
     lastNudgeAt: null,
     lastStateMtimeMs: 0,
     lastStateSize: 0,
+    lastToolUseId: null,
   };
 
   if (!config.enabled) {
+    return { shouldNudge: false, editsSinceCheckpoint: 0, state: emptyState };
+  }
+
+  if (isForeignOverlap(opts.agent, opts.repoDir, opts.payload, opts.env)) {
     return { shouldNudge: false, editsSinceCheckpoint: 0, state: emptyState };
   }
 
@@ -291,6 +364,7 @@ export function evaluateHook(opts: {
       lastNudgeAt: null,
       lastStateMtimeMs: st.mtimeMs,
       lastStateSize: st.size,
+      lastToolUseId: null,
     };
   } else if (st.mtimeMs > loaded.lastStateMtimeMs || st.size !== loaded.lastStateSize) {
     // FEAT-004 K10-v2: state.yaml changed -> reset counter + clear cooldown.
@@ -301,6 +375,7 @@ export function evaluateHook(opts: {
       lastNudgeAt: null,
       lastStateMtimeMs: st.mtimeMs,
       lastStateSize: st.size,
+      lastToolUseId: null,
     };
     if (opts.event !== 'PostToolUse' || isSelfEdit(opts.agent, opts.event, opts.payload)) {
       saveHookState(opts.repoDir, state);
@@ -311,8 +386,11 @@ export function evaluateHook(opts: {
   }
 
   if (opts.event === 'PostToolUse') {
-    if (!isSelfEdit(opts.agent, opts.event, opts.payload)) {
+    const toolUseId = extractToolUseId(opts.payload);
+    const isDuplicateTool = toolUseId !== null && state.lastToolUseId === toolUseId;
+    if (!isSelfEdit(opts.agent, opts.event, opts.payload) && !isDuplicateTool) {
       state.editsSinceCheckpoint += 1;
+      if (toolUseId !== null) state.lastToolUseId = toolUseId;
       saveHookState(opts.repoDir, state);
     } else if (loaded === null) {
       saveHookState(opts.repoDir, state);
@@ -326,9 +404,9 @@ export function evaluateHook(opts: {
     return { shouldNudge: false, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
   }
 
-  // Mid-turn nudges: claude PostToolUse, agy PreInvocation.
+  // Mid-turn nudges: claude/cursor/grok PostToolUse, agy PreInvocation.
   if (
-    (opts.agent === 'claude' && opts.event === 'PostToolUse') ||
+    ((opts.agent === 'claude' || opts.agent === 'cursor' || opts.agent === 'grok') && opts.event === 'PostToolUse') ||
     (opts.agent === 'agy' && opts.event === 'PreInvocation')
   ) {
     const thresholdMet = state.editsSinceCheckpoint >= config.edit_threshold;
@@ -359,6 +437,27 @@ export function evaluateHook(opts: {
       }
       return { shouldNudge: true, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
     }
+    if (opts.agent === 'cursor') {
+      if (
+        opts.payload.stop_hook_active === true ||
+        opts.payload.status === 'aborted' ||
+        (typeof opts.payload.loop_count === 'number' && opts.payload.loop_count > 0)
+      ) {
+        return { shouldNudge: false, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
+      }
+      return { shouldNudge: true, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
+    }
+    if (opts.agent === 'grok') {
+      if (
+        opts.payload.stopHookActive === true ||
+        opts.payload.stop_hook_active === true ||
+        (typeof opts.payload.subagentType === 'string' && opts.payload.subagentType.length > 0) ||
+        (typeof opts.payload.reason === 'string' && opts.payload.reason !== 'end_turn')
+      ) {
+        return { shouldNudge: false, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
+      }
+      return { shouldNudge: true, editsSinceCheckpoint: state.editsSinceCheckpoint, state };
+    }
     if (opts.agent === 'agy') {
       if (
         opts.payload.continuationActive === true ||
@@ -384,7 +483,7 @@ export function formatVendorOutput(
   const edits = result.editsSinceCheckpoint ?? result.state?.editsSinceCheckpoint ?? 0;
   const nudge = buildNudgeText(edits);
 
-  if (agent === 'claude') {
+  if (agent === 'claude' || agent === 'grok') {
     if (event === 'PostToolUse') {
       return {
         hookSpecificOutput: {
@@ -397,6 +496,20 @@ export function formatVendorOutput(
       return {
         decision: 'block',
         reason: nudge,
+      };
+    }
+    return {};
+  }
+
+  if (agent === 'cursor') {
+    if (event === 'PostToolUse') {
+      return {
+        additional_context: nudge,
+      };
+    }
+    if (event === 'Stop') {
+      return {
+        followup_message: nudge,
       };
     }
     return {};

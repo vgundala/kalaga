@@ -489,7 +489,7 @@ function printHelp(): void {
   kala state                print the handoff state as JSON
   kala state goal|next|note|neg|done [text]
                             set that field, or print it when text is omitted
-  kala hooks install [--agents claude,agy]
+  kala hooks install [--agents claude,agy,cursor,grok]
                             install/merge checkpoint hooks in this repo
   kala hooks status         show installed hooks + last checkpoint age
   kala hooks uninstall      remove Kalaga hooks (preserve user hooks)
@@ -501,7 +501,7 @@ function printHelp(): void {
     --assume-limit          on a TTY, treat a store-less exit as a limit hit
     --strict-state          kala switch refuses while the handoff state is thin
     --force                 kala init replaces an existing state file
-    --agents <list>         comma-separated hook agents (claude,agy)
+    --agents <list>         comma-separated hook agents (claude,agy,cursor,grok)
 
   Headroom for Claude and Grok is labeled [logged] (what the local store
   recorded). Cursor is [est.]. agy tokens stay unset; session ids come from

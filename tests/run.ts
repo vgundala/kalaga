@@ -1189,7 +1189,7 @@ await test('K3/K5/K6/K13: non-destructive hooks install/status/uninstall, gitign
   assert.strictEqual(fs.readFileSync(path.join(r, '.claude', 'settings.local.json'), 'utf8'), '{bad json');
 
   // Unsupported --agents exits non-zero
-  const badAgent = runKala(['hooks', 'install', '--agents', 'cursor'], r);
+  const badAgent = runKala(['hooks', 'install', '--agents', 'unknown'], r);
   assert.notStrictEqual(badAgent.status, 0);
   assert.match(badAgent.stderr, /unsupported hook agent/);
 });
@@ -1518,13 +1518,13 @@ await test('K13-v2: default hooks install filters by isInstalled(agentFor(k)); u
   assert.strictEqual(fs.existsSync(path.join(rAgy, '.claude', 'settings.local.json')), false);
   assert.ok(fs.existsSync(path.join(rAgy, '.agents', 'hooks.json')));
 
-  // 3. Neither on PATH -> install errors clearly suggesting --agents claude,agy and writes nothing
+  // 3. None on PATH -> install errors clearly suggesting --agents claude,agy,cursor,grok and writes nothing
   const rNone = path.join(ROOT, 'k13v2-repo-none');
   fs.mkdirSync(rNone, { recursive: true });
   state.saveState(rNone, state.blankState(rNone, 'main'));
   const resN = runWithPath(['hooks', 'install'], rNone, binNone);
   assert.notStrictEqual(resN.status, 0);
-  assert.match(resN.stderr, /--agents claude,agy/);
+  assert.match(resN.stderr, /--agents claude,agy,cursor,grok/);
   assert.strictEqual(fs.existsSync(path.join(rNone, '.claude', 'settings.local.json')), false);
   assert.strictEqual(fs.existsSync(path.join(rNone, '.agents', 'hooks.json')), false);
 
@@ -1540,7 +1540,7 @@ await test('K13-v2: default hooks install filters by isInstalled(agentFor(k)); u
 
     process.env.PATH = binNone;
     cfg.clearResolvedCache();
-    assert.throws(() => hooks.installHooks(rInProc), /--agents claude,agy/);
+    assert.throws(() => hooks.installHooks(rInProc), /--agents claude,agy,cursor,grok/);
     assert.throws(() => hooks.installHooks(rInProc, { agents: [] }), /no hook agents specified/);
   } finally {
     process.env.PATH = prevPath;
@@ -1853,6 +1853,148 @@ await test('index: missing binary exits 1 without mutating owner; agy non-zero t
 
   // Verify agy non-zero metadata-only exit classification logic matches suspect tier
   assert.strictEqual(classifyExit({ hit: null, exitCode: 1, hasTail: false }), 'suspect');
+});
+
+section('FEAT-004 v3: cursor + grok hooks & cross-vendor dedup (K22–K27)');
+await test('K22–K24: install/status/uninstall for all 4 agents, non-destructive merge, symlink & malformed isolation', () => {
+  const r = path.join(ROOT, 'k22-all4');
+  fs.mkdirSync(path.join(r, '.cursor'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r });
+  state.saveState(r, state.blankState(r, 'main'));
+
+  // Seed user Cursor hook entry and sibling property
+  fs.writeFileSync(
+    path.join(r, '.cursor', 'hooks.json'),
+    JSON.stringify({
+      version: 1,
+      userNote: 'keep-cursor',
+      hooks: {
+        beforeShellExecution: [{ command: 'echo check-shell' }],
+        postToolUse: [{ matcher: 'Read', command: 'echo user-read' }],
+      },
+    }) + '\n',
+  );
+
+  const inst = runKala(['hooks', 'install', '--agents', 'claude,agy,cursor,grok'], r);
+  assert.strictEqual(inst.status, 0, inst.stderr);
+  assert.match(inst.stderr, /\.agents\/hooks\.json is not gitignored/);
+  assert.match(inst.stderr, /\.cursor\/hooks\.json is not gitignored/);
+  assert.match(inst.stderr, /\.grok\/hooks\/kalaga-checkpoint\.json is not gitignored/);
+  assert.match(inst.stderr, /\/hooks-trust in Grok/);
+
+  const curJson = JSON.parse(fs.readFileSync(path.join(r, '.cursor', 'hooks.json'), 'utf8'));
+  assert.strictEqual(curJson.userNote, 'keep-cursor');
+  assert.strictEqual(curJson.hooks.beforeShellExecution.length, 1);
+  assert.strictEqual(curJson.hooks.postToolUse.length, 2);
+  assert.strictEqual(curJson.hooks.postToolUse[1].matcher, 'Write|Edit|Shell|StrReplace|Delete');
+  assert.strictEqual(curJson.hooks.stop.length, 1);
+
+  const grokJson = JSON.parse(fs.readFileSync(path.join(r, '.grok', 'hooks', 'kalaga-checkpoint.json'), 'utf8'));
+  assert.strictEqual(grokJson.hooks.PostToolUse.length, 1);
+  assert.strictEqual(grokJson.hooks.Stop.length, 1);
+  assert.ok(grokJson.hooks.PostToolUse[0].hooks[0].args.includes('grok'));
+
+  const stAll = runKala(['hooks', 'status'], r);
+  assert.strictEqual(stAll.status, 0, stAll.stderr);
+  assert.match(stAll.stdout, /claude: installed/);
+  assert.match(stAll.stdout, /agy:\s+installed/);
+  assert.match(stAll.stdout, /cursor: installed \(\.cursor\/hooks\.json: PostToolUse, Stop\)/);
+  assert.match(stAll.stdout, /grok:\s+installed \(\.grok\/hooks\/kalaga-checkpoint\.json: PostToolUse, Stop\)/);
+
+  // Corrupt .cursor/hooks.json -> status isolates error while claude/agy/grok keep reporting installed
+  fs.writeFileSync(path.join(r, '.cursor', 'hooks.json'), '{bad');
+  const repErr = hooks.hooksStatus(r);
+  assert.strictEqual(repErr.cursorInstalled, false);
+  assert.ok(repErr.cursorError && repErr.cursorError.length > 0);
+  assert.strictEqual(repErr.claudeInstalled, true);
+  assert.strictEqual(repErr.agyInstalled, true);
+  assert.strictEqual(repErr.grokInstalled, true);
+  assert.notStrictEqual(runKala(['hooks', 'install', '--agents', 'cursor'], r).status, 0);
+
+  // Restore valid .cursor/hooks.json via write, then uninstall cursor + grok cleanly
+  fs.writeFileSync(
+    path.join(r, '.cursor', 'hooks.json'),
+    JSON.stringify({ version: 1, hooks: { postToolUse: [{ matcher: 'Read', command: 'echo user-read' }] } }) + '\n',
+  );
+  hooks.installHooks(r, { agents: ['cursor'] });
+  const uninst = runKala(['hooks', 'uninstall'], r);
+  assert.strictEqual(uninst.status, 0, uninst.stderr);
+  const afterCur = JSON.parse(fs.readFileSync(path.join(r, '.cursor', 'hooks.json'), 'utf8'));
+  assert.strictEqual(afterCur.hooks.postToolUse.length, 1);
+  assert.strictEqual(afterCur.hooks.postToolUse[0].command, 'echo user-read');
+  assert.strictEqual(afterCur.hooks.stop, undefined);
+  assert.strictEqual(fs.existsSync(path.join(r, '.grok', 'hooks', 'kalaga-checkpoint.json')), false, 'empty Kalaga grok file removed');
+
+  // Symlinked .cursor/hooks.json & .grok/hooks/kalaga-checkpoint.json refused without touching target
+  const rSym = path.join(ROOT, 'k23-sym');
+  fs.mkdirSync(path.join(rSym, '.cursor'), { recursive: true });
+  fs.mkdirSync(path.join(rSym, '.grok', 'hooks'), { recursive: true });
+  const victim = path.join(ROOT, 'k23-victim.json');
+  fs.writeFileSync(victim, 'UNTOUCHED');
+  fs.symlinkSync(victim, path.join(rSym, '.cursor', 'hooks.json'));
+  fs.symlinkSync(victim, path.join(rSym, '.grok', 'hooks', 'kalaga-checkpoint.json'));
+  assert.throws(() => hooks.installHooks(rSym, { agents: ['cursor'] }), /symlink/);
+  assert.throws(() => hooks.installHooks(rSym, { agents: ['grok'] }), /symlink/);
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'UNTOUCHED');
+});
+
+await test('K25/K26: workspace_roots/workspaceRoot resolution, schemas, overlap suppression & tool_use_id dedup', () => {
+  const r = path.join(ROOT, 'k25-k26-repo');
+  const sub = path.join(r, 'src');
+  fs.mkdirSync(sub, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+
+  assert.strictEqual(hook.findRepoRoot({ workspace_roots: [sub] }), r);
+  assert.strictEqual(hook.findRepoRoot({ workspaceRoot: sub }), r);
+  assert.strictEqual(hook.isSelfEdit('cursor', 'PostToolUse', { tool_input: { path: '.kala/state.yaml' } }), true);
+  assert.strictEqual(hook.isSelfEdit('grok', 'PostToolUse', { toolInput: { file_path: `${r}/.kala/state.yaml` } }), true);
+  assert.strictEqual(hook.isSelfEdit('grok', 'PostToolUse', { toolInput: { file_path: `${r}/src/app.ts` } }), false);
+
+  const curPost = hook.formatVendorOutput('cursor', 'PostToolUse', { shouldNudge: true, editsSinceCheckpoint: 5 });
+  assert.ok(typeof curPost.additional_context === 'string' && curPost.additional_context.includes('[kalaga]'));
+  const curStop = hook.formatVendorOutput('cursor', 'Stop', { shouldNudge: true, editsSinceCheckpoint: 2 });
+  assert.ok(typeof curStop.followup_message === 'string' && curStop.followup_message.includes('[kalaga]'));
+
+  const grokPost = hook.formatVendorOutput('grok', 'PostToolUse', { shouldNudge: true, editsSinceCheckpoint: 5 }) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+  assert.strictEqual(grokPost.hookSpecificOutput.hookEventName, 'PostToolUse');
+  assert.ok(grokPost.hookSpecificOutput.additionalContext.includes('[kalaga]'));
+  const grokStop = hook.formatVendorOutput('grok', 'Stop', { shouldNudge: true, editsSinceCheckpoint: 1 });
+  assert.strictEqual(grokStop.decision, 'block');
+
+  // Re-entry and teardown Stop guards for Cursor & Grok
+  const st = fs.statSync(path.join(r, '.kala', 'state.yaml'));
+  hook.saveHookState(r, { editsSinceCheckpoint: 2, lastNudgeAt: null, lastStateMtimeMs: st.mtimeMs, lastStateSize: st.size, lastToolUseId: null });
+  assert.strictEqual(hook.evaluateHook({ agent: 'cursor', event: 'Stop', repoDir: r, payload: { stop_hook_active: false, loop_count: 0 } }).shouldNudge, true);
+  assert.strictEqual(hook.evaluateHook({ agent: 'cursor', event: 'Stop', repoDir: r, payload: { stop_hook_active: false, loop_count: 1 } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'cursor', event: 'Stop', repoDir: r, payload: { status: 'aborted' } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'grok', event: 'Stop', repoDir: r, payload: { reason: 'end_turn', stopHookActive: false } }).shouldNudge, true);
+  assert.strictEqual(hook.evaluateHook({ agent: 'grok', event: 'Stop', repoDir: r, payload: { reason: 'shutdown', stopHookActive: false } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'grok', event: 'Stop', repoDir: r, payload: { reason: 'channel_closed', stopHookActive: false } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'grok', event: 'Stop', repoDir: r, payload: { reason: 'end_turn', stopHookActive: true } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'grok', event: 'Stop', repoDir: r, payload: { reason: 'end_turn', subagentType: 'explore' } }).shouldNudge, false);
+
+  // Install claude, cursor, and grok hooks together and test overlap + tool_use_id dedup
+  hooks.installHooks(r, { agents: ['claude', 'cursor', 'grok'] });
+  const customCfg = { enabled: true, edit_threshold: 5, max_age_minutes: 10, cooldown_minutes: 3, timeout_seconds: 5 };
+  hook.saveHookState(r, { editsSinceCheckpoint: 0, lastNudgeAt: null, lastStateMtimeMs: st.mtimeMs, lastStateSize: st.size, lastToolUseId: null });
+
+  // 1) Cursor handles tool id "t-1"; compat Claude hook with cursor_version must no-op (no double count)
+  const c1 = hook.evaluateHook({ agent: 'cursor', event: 'PostToolUse', repoDir: r, payload: { cursor_version: '2026.11.22', tool_use_id: 't-1', tool_input: { file_path: 'src/a.ts' } }, config: customCfg });
+  assert.strictEqual(c1.editsSinceCheckpoint, 1);
+  const cOverlap = hook.evaluateHook({ agent: 'claude', event: 'PostToolUse', repoDir: r, payload: { cursor_version: '2026.11.22', tool_use_id: 't-1', tool_input: { file_path: 'src/a.ts' } }, config: customCfg });
+  assert.strictEqual(cOverlap.shouldNudge, false);
+  assert.strictEqual(hook.loadHookState(r)?.editsSinceCheckpoint, 1);
+
+  // 2) Grok handles tool id "g-1"; compat Claude/Cursor hook with GROK_HOOK_EVENT must no-op
+  const g1 = hook.evaluateHook({ agent: 'grok', event: 'PostToolUse', repoDir: r, payload: { toolUseId: 'g-1', toolInput: { file_path: 'src/b.ts' } }, config: customCfg, env: { GROK_HOOK_EVENT: 'post_tool_use' } });
+  assert.strictEqual(g1.editsSinceCheckpoint, 2);
+  const gOverlap = hook.evaluateHook({ agent: 'claude', event: 'PostToolUse', repoDir: r, payload: { tool_use_id: 'g-1', tool_input: { file_path: 'src/b.ts' } }, config: customCfg, env: { GROK_HOOK_EVENT: 'post_tool_use' } });
+  assert.strictEqual(gOverlap.shouldNudge, false);
+  assert.strictEqual(hook.loadHookState(r)?.editsSinceCheckpoint, 2);
+
+  // 3) Direct duplicate tool_use_id to same agent does not double-increment
+  const gDup = hook.evaluateHook({ agent: 'grok', event: 'PostToolUse', repoDir: r, payload: { toolUseId: 'g-1', toolInput: { file_path: 'src/b.ts' } }, config: customCfg, env: { GROK_HOOK_EVENT: 'post_tool_use' } });
+  assert.strictEqual(gDup.editsSinceCheckpoint, 2);
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

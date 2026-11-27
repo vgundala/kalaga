@@ -11,8 +11,8 @@ import { agentFor, isInstalled, loadHookConfig } from './config.ts';
 import type { HookConfig } from './config.ts';
 import { loadHookState } from './hook.ts';
 
-export type HookAgentKey = 'claude' | 'agy';
-export const SUPPORTED_HOOK_AGENTS: HookAgentKey[] = ['claude', 'agy'];
+export type HookAgentKey = 'claude' | 'agy' | 'cursor' | 'grok';
+export const SUPPORTED_HOOK_AGENTS: HookAgentKey[] = ['claude', 'agy', 'cursor', 'grok'];
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -121,10 +121,11 @@ export function parseHookAgentsArg(raw?: string): HookAgentKey[] {
   }
   const out: HookAgentKey[] = [];
   for (const p of parts) {
-    if (p !== 'claude' && p !== 'agy') {
+    if (!SUPPORTED_HOOK_AGENTS.includes(p as HookAgentKey)) {
       throw new Error(`unsupported hook agent '${p}' (supported: ${SUPPORTED_HOOK_AGENTS.join(', ')})`);
     }
-    if (!out.includes(p)) out.push(p);
+    const key = p as HookAgentKey;
+    if (!out.includes(key)) out.push(key);
   }
   return out;
 }
@@ -133,13 +134,54 @@ function claudeCommand(kalaBin: string, event: 'PostToolUse' | 'Stop'): string {
   return `${shellQuote(kalaBin)} _hook --agent claude --event ${event}`;
 }
 
+function cursorCommand(kalaBin: string, event: 'PostToolUse' | 'Stop'): string {
+  return `${shellQuote(kalaBin)} _hook --agent cursor --event ${event}`;
+}
+
+function grokHookHandler(kalaBin: string, event: 'PostToolUse' | 'Stop', cfg: HookConfig): Record<string, unknown> {
+  if (process.platform === 'win32') {
+    return {
+      type: 'command',
+      command: process.execPath,
+      args: [kalaBin, '_hook', '--agent', 'grok', '--event', event],
+      timeout: cfg.timeout_seconds,
+    };
+  }
+  return {
+    type: 'command',
+    command: kalaBin,
+    args: ['_hook', '--agent', 'grok', '--event', event],
+    timeout: cfg.timeout_seconds,
+  };
+}
+
 function agyCommand(kalaBin: string, event: 'PostToolUse' | 'PreInvocation' | 'Stop'): string {
   const q = shellQuote(kalaBin);
   return `[ -x ${q} ] && ${q} _hook --agent agy --event ${event} || printf '{}'`;
 }
 
+function isKalagaHookEntry(entry: unknown, agentKey: HookAgentKey): boolean {
+  if (!isPlainObject(entry)) return false;
+  if (typeof entry.command === 'string' && entry.command.includes(`_hook --agent ${agentKey}`)) {
+    return true;
+  }
+  if (Array.isArray(entry.args)) {
+    const idx = entry.args.indexOf('_hook');
+    if (idx >= 0 && entry.args[idx + 1] === '--agent' && entry.args[idx + 2] === agentKey) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isKalagaClaudeHook(entry: unknown): boolean {
-  return isPlainObject(entry) && typeof entry.command === 'string' && entry.command.includes('_hook --agent claude');
+  return isKalagaHookEntry(entry, 'claude');
+}
+
+function stripKalagaFromFlatList(list: unknown, agentKey: HookAgentKey): { next: unknown[]; removed: number } {
+  if (!Array.isArray(list)) return { next: [], removed: 0 };
+  const next = list.filter((entry) => !isKalagaHookEntry(entry, agentKey));
+  return { next, removed: list.length - next.length };
 }
 
 function stripKalagaFromClaudeEventList(list: unknown): { next: unknown[]; removed: number } {
@@ -257,6 +299,12 @@ export function isPathGitignored(repoDir: string, relPath: string): boolean {
   return res.status === 0;
 }
 
+function warnIfNotGitignored(repoDir: string, relPath: string): boolean {
+  if (!isGitRepo(repoDir) || isPathGitignored(repoDir, relPath)) return false;
+  console.error(`kalaga: warning — ${relPath} is not gitignored; add it to .gitignore or .git/info/exclude so machine-local paths are not committed.`);
+  return true;
+}
+
 function installAgyHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
   const file = path.join(repoDir, '.agents', 'hooks.json');
   const { obj, mode } = readJsonObjectSafe(file, '.agents/hooks.json');
@@ -294,13 +342,166 @@ function installAgyHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { g
   };
 
   atomicWriteJson(file, nextObj, mode, '.agents/hooks.json');
+  return { gitignoreWarning: warnIfNotGitignored(repoDir, '.agents/hooks.json') };
+}
 
-  let gitignoreWarning = false;
-  if (isGitRepo(repoDir) && !isPathGitignored(repoDir, '.agents/hooks.json')) {
-    gitignoreWarning = true;
-    console.error('kalaga: warning — .agents/hooks.json is not gitignored; add it to .gitignore or .git/info/exclude so machine-local paths are not committed.');
+function installCursorHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
+  const file = path.join(repoDir, '.cursor', 'hooks.json');
+  const { obj, mode } = readJsonObjectSafe(file, '.cursor/hooks.json');
+
+  let hooksObj: Record<string, unknown>;
+  if (obj.hooks === undefined) {
+    hooksObj = {};
+  } else if (isPlainObject(obj.hooks)) {
+    hooksObj = { ...obj.hooks };
+  } else {
+    throw new Error('cannot merge .cursor/hooks.json: "hooks" must be an object');
   }
-  return { gitignoreWarning };
+
+  for (const ev of ['postToolUse', 'stop'] as const) {
+    if (hooksObj[ev] !== undefined && !Array.isArray(hooksObj[ev])) {
+      throw new Error(`cannot merge .cursor/hooks.json: "hooks.${ev}" must be an array`);
+    }
+  }
+
+  const post = stripKalagaFromFlatList(hooksObj.postToolUse, 'cursor').next;
+  post.push({
+    matcher: 'Write|Edit|Shell|StrReplace|Delete',
+    command: cursorCommand(kalaBin, 'PostToolUse'),
+    timeout: cfg.timeout_seconds,
+  });
+
+  const stop = stripKalagaFromFlatList(hooksObj.stop, 'cursor').next;
+  stop.push({
+    command: cursorCommand(kalaBin, 'Stop'),
+    timeout: cfg.timeout_seconds,
+  });
+
+  hooksObj.postToolUse = post;
+  hooksObj.stop = stop;
+  const nextObj: Record<string, unknown> = {
+    version: typeof obj.version === 'number' ? obj.version : 1,
+    ...obj,
+    hooks: hooksObj,
+  };
+  atomicWriteJson(file, nextObj, mode, '.cursor/hooks.json');
+  return { gitignoreWarning: warnIfNotGitignored(repoDir, '.cursor/hooks.json') };
+}
+
+function uninstallCursorHooks(repoDir: string): boolean {
+  const file = path.join(repoDir, '.cursor', 'hooks.json');
+  const { obj, mode, exists } = readJsonObjectSafe(file, '.cursor/hooks.json');
+  if (!exists || !isPlainObject(obj.hooks)) return false;
+
+  const hooksObj: Record<string, unknown> = { ...obj.hooks };
+  let totalRemoved = 0;
+  for (const ev of ['postToolUse', 'stop'] as const) {
+    if (hooksObj[ev] === undefined) continue;
+    const { next, removed } = stripKalagaFromFlatList(hooksObj[ev], 'cursor');
+    if (removed > 0) {
+      totalRemoved += removed;
+      if (next.length > 0) hooksObj[ev] = next;
+      else delete hooksObj[ev];
+    }
+  }
+  if (totalRemoved === 0) return false;
+
+  const nextObj: Record<string, unknown> = { ...obj };
+  if (Object.keys(hooksObj).length > 0) nextObj.hooks = hooksObj;
+  else delete nextObj.hooks;
+
+  atomicWriteJson(file, nextObj, mode, '.cursor/hooks.json');
+  return true;
+}
+
+const GROK_HOOK_REL = '.grok/hooks/kalaga-checkpoint.json';
+
+function stripKalagaFromGroupedList(list: unknown, agentKey: HookAgentKey): { next: unknown[]; removed: number } {
+  if (!Array.isArray(list)) return { next: [], removed: 0 };
+  const next: unknown[] = [];
+  let removed = 0;
+  for (const group of list) {
+    if (isPlainObject(group) && Array.isArray(group.hooks)) {
+      const kept = group.hooks.filter((h) => !isKalagaHookEntry(h, agentKey));
+      const delta = group.hooks.length - kept.length;
+      removed += delta;
+      if (kept.length > 0) next.push({ ...group, hooks: kept });
+      else if (delta === 0) next.push(group);
+    } else {
+      next.push(group);
+    }
+  }
+  return { next, removed };
+}
+
+function installGrokHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
+  const file = path.join(repoDir, '.grok', 'hooks', 'kalaga-checkpoint.json');
+  const { obj, mode } = readJsonObjectSafe(file, GROK_HOOK_REL);
+
+  let hooksObj: Record<string, unknown>;
+  if (obj.hooks === undefined) {
+    hooksObj = {};
+  } else if (isPlainObject(obj.hooks)) {
+    hooksObj = { ...obj.hooks };
+  } else {
+    throw new Error(`cannot merge ${GROK_HOOK_REL}: "hooks" must be an object`);
+  }
+
+  for (const ev of ['PostToolUse', 'Stop'] as const) {
+    if (hooksObj[ev] !== undefined && !Array.isArray(hooksObj[ev])) {
+      throw new Error(`cannot merge ${GROK_HOOK_REL}: "hooks.${ev}" must be an array`);
+    }
+  }
+
+  const post = stripKalagaFromGroupedList(hooksObj.PostToolUse, 'grok').next;
+  post.push({
+    matcher: 'Edit|Write|MultiEdit|Bash|search_replace|write|run_terminal_command',
+    hooks: [grokHookHandler(kalaBin, 'PostToolUse', cfg)],
+  });
+
+  const stop = stripKalagaFromGroupedList(hooksObj.Stop, 'grok').next;
+  stop.push({
+    hooks: [grokHookHandler(kalaBin, 'Stop', cfg)],
+  });
+
+  hooksObj.PostToolUse = post;
+  hooksObj.Stop = stop;
+  const nextObj: Record<string, unknown> = { ...obj, hooks: hooksObj };
+  atomicWriteJson(file, nextObj, mode, GROK_HOOK_REL);
+  console.error('kalaga: note — Grok skips project hooks until this folder is trusted (/hooks-trust in Grok).');
+  return { gitignoreWarning: warnIfNotGitignored(repoDir, GROK_HOOK_REL) };
+}
+
+function uninstallGrokHooks(repoDir: string): boolean {
+  const file = path.join(repoDir, '.grok', 'hooks', 'kalaga-checkpoint.json');
+  const { obj, mode, exists } = readJsonObjectSafe(file, GROK_HOOK_REL);
+  if (!exists || !isPlainObject(obj.hooks)) return false;
+
+  const hooksObj: Record<string, unknown> = { ...obj.hooks };
+  let totalRemoved = 0;
+  for (const ev of ['PostToolUse', 'Stop'] as const) {
+    if (hooksObj[ev] === undefined) continue;
+    const { next, removed } = stripKalagaFromGroupedList(hooksObj[ev], 'grok');
+    if (removed > 0) {
+      totalRemoved += removed;
+      if (next.length > 0) hooksObj[ev] = next;
+      else delete hooksObj[ev];
+    }
+  }
+  if (totalRemoved === 0) return false;
+
+  const nextObj: Record<string, unknown> = { ...obj };
+  if (Object.keys(hooksObj).length > 0) nextObj.hooks = hooksObj;
+  else delete nextObj.hooks;
+
+  if (Object.keys(nextObj).length === 0) {
+    assertDirSafe(path.dirname(file), GROK_HOOK_REL);
+    assertFileSafe(file, GROK_HOOK_REL);
+    fs.unlinkSync(file);
+  } else {
+    atomicWriteJson(file, nextObj, mode, GROK_HOOK_REL);
+  }
+  return true;
 }
 
 function uninstallAgyHooks(repoDir: string): boolean {
@@ -319,7 +520,7 @@ export function defaultInstallAgents(): HookAgentKey[] {
   const installed = SUPPORTED_HOOK_AGENTS.filter((k) => isInstalled(agentFor(k)));
   if (installed.length === 0) {
     throw new Error(
-      `no supported hook agents found on PATH (${SUPPORTED_HOOK_AGENTS.join(', ')}); pass --agents claude,agy to install anyway`,
+      `no supported hook agents found on PATH (${SUPPORTED_HOOK_AGENTS.join(', ')}); pass --agents ${SUPPORTED_HOOK_AGENTS.join(',')} to install anyway`,
     );
   }
   return installed;
@@ -328,7 +529,7 @@ export function defaultInstallAgents(): HookAgentKey[] {
 export function installHooks(
   repoDir: string,
   opts: { agents?: HookAgentKey[]; kalaBin?: string; config?: HookConfig } = {},
-): { agents: HookAgentKey[]; kalaBin: string; agyGitignoreWarning: boolean } {
+): { agents: HookAgentKey[]; kalaBin: string; agyGitignoreWarning: boolean; cursorGitignoreWarning: boolean; grokGitignoreWarning: boolean } {
   const agents = opts.agents ?? defaultInstallAgents();
   if (agents.length === 0) {
     throw new Error(`no hook agents specified (supported: ${SUPPORTED_HOOK_AGENTS.join(', ')})`);
@@ -336,16 +537,21 @@ export function installHooks(
   const kalaBin = opts.kalaBin ?? resolveKalaBin();
   const cfg = opts.config ?? loadHookConfig();
   let agyGitignoreWarning = false;
+  let cursorGitignoreWarning = false;
+  let grokGitignoreWarning = false;
 
   for (const agent of agents) {
     if (agent === 'claude') {
       installClaudeHooks(repoDir, kalaBin, cfg);
     } else if (agent === 'agy') {
-      const res = installAgyHooks(repoDir, kalaBin, cfg);
-      if (res.gitignoreWarning) agyGitignoreWarning = true;
+      if (installAgyHooks(repoDir, kalaBin, cfg).gitignoreWarning) agyGitignoreWarning = true;
+    } else if (agent === 'cursor') {
+      if (installCursorHooks(repoDir, kalaBin, cfg).gitignoreWarning) cursorGitignoreWarning = true;
+    } else if (agent === 'grok') {
+      if (installGrokHooks(repoDir, kalaBin, cfg).gitignoreWarning) grokGitignoreWarning = true;
     }
   }
-  return { agents, kalaBin, agyGitignoreWarning };
+  return { agents, kalaBin, agyGitignoreWarning, cursorGitignoreWarning, grokGitignoreWarning };
 }
 
 export function uninstallHooks(
@@ -359,6 +565,10 @@ export function uninstallHooks(
       if (uninstallClaudeHooks(repoDir)) removed.push('claude');
     } else if (agent === 'agy') {
       if (uninstallAgyHooks(repoDir)) removed.push('agy');
+    } else if (agent === 'cursor') {
+      if (uninstallCursorHooks(repoDir)) removed.push('cursor');
+    } else if (agent === 'grok') {
+      if (uninstallGrokHooks(repoDir)) removed.push('grok');
     }
   }
   return { removed };
@@ -370,6 +580,12 @@ export interface HooksStatusReport {
   claudeError: string | null;
   agyInstalled: boolean;
   agyError: string | null;
+  cursorInstalled: boolean;
+  cursorEvents: string[];
+  cursorError: string | null;
+  grokInstalled: boolean;
+  grokEvents: string[];
+  grokError: string | null;
   stateExists: boolean;
   stateAgeMs: number | null;
   editsSinceCheckpoint: number;
@@ -392,16 +608,27 @@ function shortStatusError(err: unknown, label: string): string {
   return (concise || cleaned || 'unknown error').slice(0, 120);
 }
 
-function countClaudeEvents(obj: Record<string, unknown>): string[] {
+function countGroupedEvents(obj: Record<string, unknown>, agentKey: HookAgentKey, eventNames: readonly string[]): string[] {
   if (!isPlainObject(obj.hooks)) return [];
   const events: string[] = [];
-  for (const ev of ['PostToolUse', 'Stop'] as const) {
+  for (const ev of eventNames) {
     const list = obj.hooks[ev];
     if (!Array.isArray(list)) continue;
     const found = list.some(
-      (g) => isPlainObject(g) && Array.isArray(g.hooks) && g.hooks.some(isKalagaClaudeHook),
+      (g) => isPlainObject(g) && Array.isArray(g.hooks) && g.hooks.some((h) => isKalagaHookEntry(h, agentKey)),
     );
     if (found) events.push(ev);
+  }
+  return events;
+}
+
+function countCursorEvents(obj: Record<string, unknown>): string[] {
+  if (!isPlainObject(obj.hooks)) return [];
+  const events: string[] = [];
+  for (const [ev, label] of [['postToolUse', 'PostToolUse'], ['stop', 'Stop']] as const) {
+    const list = obj.hooks[ev];
+    if (!Array.isArray(list)) continue;
+    if (list.some((entry) => isKalagaHookEntry(entry, 'cursor'))) events.push(label);
   }
   return events;
 }
@@ -412,7 +639,7 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
   let claudeError: string | null = null;
   try {
     const claudeParsed = readJsonObjectSafe(claudeFile, '.claude/settings.local.json');
-    claudeEvents = claudeParsed.exists ? countClaudeEvents(claudeParsed.obj) : [];
+    claudeEvents = claudeParsed.exists ? countGroupedEvents(claudeParsed.obj, 'claude', ['PostToolUse', 'Stop']) : [];
   } catch (e) {
     claudeError = shortStatusError(e, '.claude/settings.local.json');
   }
@@ -427,6 +654,26 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
     agyError = shortStatusError(e, '.agents/hooks.json');
   }
 
+  const cursorFile = path.join(repoDir, '.cursor', 'hooks.json');
+  let cursorEvents: string[] = [];
+  let cursorError: string | null = null;
+  try {
+    const cursorParsed = readJsonObjectSafe(cursorFile, '.cursor/hooks.json');
+    cursorEvents = cursorParsed.exists ? countCursorEvents(cursorParsed.obj) : [];
+  } catch (e) {
+    cursorError = shortStatusError(e, '.cursor/hooks.json');
+  }
+
+  const grokFile = path.join(repoDir, '.grok', 'hooks', 'kalaga-checkpoint.json');
+  let grokEvents: string[] = [];
+  let grokError: string | null = null;
+  try {
+    const grokParsed = readJsonObjectSafe(grokFile, GROK_HOOK_REL);
+    grokEvents = grokParsed.exists ? countGroupedEvents(grokParsed.obj, 'grok', ['PostToolUse', 'Stop']) : [];
+  } catch (e) {
+    grokError = shortStatusError(e, GROK_HOOK_REL);
+  }
+
   const kalaDir = path.join(repoDir, '.kala');
   assertDirSafe(kalaDir, '.kala');
   const stateFile = path.join(kalaDir, 'state.yaml');
@@ -439,6 +686,12 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
     claudeError,
     agyInstalled,
     agyError,
+    cursorInstalled: cursorEvents.length > 0,
+    cursorEvents,
+    cursorError,
+    grokInstalled: grokEvents.length > 0,
+    grokEvents,
+    grokError,
     stateExists: Boolean(stateSt),
     stateAgeMs: stateSt ? Math.max(0, nowMs - stateSt.mtimeMs) : null,
     editsSinceCheckpoint: hookState?.editsSinceCheckpoint ?? 0,
@@ -483,9 +736,17 @@ export function runHooksCli(sub: string | undefined, repoDir: string, flags: { a
     const agyDetail = st.agyError
       ? `error (${st.agyError})`
       : (st.agyInstalled ? 'installed (.agents/hooks.json: kalaga-checkpoint)' : 'not installed');
+    const cursorDetail = st.cursorError
+      ? `error (${st.cursorError})`
+      : (st.cursorInstalled ? `installed (.cursor/hooks.json: ${st.cursorEvents.join(', ')})` : 'not installed');
+    const grokDetail = st.grokError
+      ? `error (${st.grokError})`
+      : (st.grokInstalled ? `installed (${GROK_HOOK_REL}: ${st.grokEvents.join(', ')})` : 'not installed');
     console.log(`kalaga hooks · ${path.basename(repoDir)}`);
     console.log(`  claude: ${claudeDetail}`);
     console.log(`  agy:    ${agyDetail}`);
+    console.log(`  cursor: ${cursorDetail}`);
+    console.log(`  grok:   ${grokDetail}`);
     if (st.stateExists && st.stateAgeMs !== null) {
       console.log(`  checkpoint: ${formatAge(st.stateAgeMs)} · edits since checkpoint: ${st.editsSinceCheckpoint}${st.lastNudgeAt ? ` · last nudge: ${st.lastNudgeAt}` : ''}`);
     } else {

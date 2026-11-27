@@ -88,7 +88,7 @@ kala why [deadAgent]               Dry-run taker ranking
 kala state                         Print the handoff state as JSON
 kala state goal|next|note|neg|done [text]
                                    Set that field, or print it when text is omitted
-kala hooks install [--agents claude,agy]
+kala hooks install [--agents claude,agy,cursor,grok]
                                    Install/merge checkpoint hooks in this repo
 kala hooks status                  Show installed hooks + last checkpoint age
 kala hooks uninstall               Remove Kalaga hooks (keep user hooks)
@@ -133,7 +133,7 @@ a limit assumption nobody saw.
 
 **Live-ask:** `kala switch` may ask the previous agent for a YAML update when Kalaga still has a fresh session id for that agent (headless, 15 second timeout). The call resumes that session and passes the vendor trust flag when this directory already has a Kalaga grant. A limit exit does not ask the agent that just ran out. If the ask fails, the existing state stays.
 
-**Continuous checkpointing (`kala hooks`):** Run `kala hooks install` in a project to wire opt-in, non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`) and/or Antigravity (`.agents/hooks.json`) — or pass `--agents claude,agy` explicitly. While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` and nudges the active agent to refresh `.kala/state.yaml` when stale (mid-turn and at `Stop`). Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` to remove only Kalaga entries cleanly.
+**Continuous checkpointing (`kala hooks`):** Run `kala hooks install` in a project to wire opt-in, non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`), Antigravity (`.agents/hooks.json`), Cursor (`.cursor/hooks.json`), and/or Grok (`.grok/hooks/kalaga-checkpoint.json`) — or pass `--agents claude,agy,cursor,grok` explicitly. While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` (deduplicating cross-vendor calls) and nudges the active agent to refresh `.kala/state.yaml` when stale. Grok requires project folder trust (`/hooks-trust`) before executing repo hooks. Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` to remove only Kalaga entries cleanly.
 
 **Same-agent continuity:** `kala resume` reopens a captured session id when the vendor supports it. The conversation already has context, so Kalaga does not inject a handoff prompt. Session ids are discovered from each vendor’s local store when a stable signature exists (Claude jsonl, Cursor chat meta, Grok sqlite, Antigravity `~/.gemini/antigravity-cli`).
 
