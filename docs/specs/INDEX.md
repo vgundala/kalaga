@@ -20,7 +20,7 @@ Certification records (pass / waive evidence) live under
 | FEAT-003 | [v1](FEAT-003-handoff-state-protocol.v1.md) | Handoff state protocol + live-ask | `done` |
 | FEAT-004 | [v1](FEAT-004-continuous-checkpointing.v1.md) | Continuous checkpointing via agent lifecycle hooks | `superseded` |
 | FEAT-004 | [v2](FEAT-004-continuous-checkpointing.v2.md) | Continuous checkpointing via agent lifecycle hooks (review fixes) | `done` |
-| FEAT-004 | [v3](FEAT-004-continuous-checkpointing.v3.md) | Cursor and Grok hooks + cross-vendor deduplication | `certify` |
+| FEAT-004 | [v3](FEAT-004-continuous-checkpointing.v3.md) | Cursor and Grok hooks + cross-vendor deduplication | `done` |
 
 Certify evidence: [`history/README.md`](history/README.md).
 

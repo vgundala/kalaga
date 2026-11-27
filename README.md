@@ -92,8 +92,8 @@ kala hooks install [--agents claude,agy,cursor,grok]
                                    Install/merge checkpoint hooks in this repo
 kala hooks status                  Show installed hooks + last checkpoint age
 kala hooks uninstall               Remove Kalaga hooks (keep user hooks)
-kala trust                         List trust grants
-kala trust revoke <path|--all>
+kala trust [status|revoke <path>|revoke --all]
+                                   Manage Kalaga path trust grants
 kala agents                        List known agent keys
 kala --version                     Print the version (-v works too)
 ```
@@ -153,6 +153,7 @@ Kalaga owns the handoff contract (`.kala/state.yaml`, switch, resume, ranking). 
 | **Cursor headroom** | `[est.]` in `kala status` | Coarse heuristic only; not quota. |
 | **Limit detection** | Limit menu after exit | Best-effort phrase match on local session tails. |
 | **Vendor login / plan UI** | Sign-in or upgrade banners inside a TUI | Not automated. |
+| **Headless `-p` hooks (`agy` / `grok`)** | One-shot `-p` runs may wait on a `Stop` follow-up | Interactive PTY sessions and mid-turn `PostToolUse` checkpoints complete normally. |
 
 Verified against Antigravity CLI, Cursor Agent, Grok Build, and Claude Code as of 2026-11. Open an issue if a vendor moves its store.
 

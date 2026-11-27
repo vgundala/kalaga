@@ -1,29 +1,18 @@
-# Kalaga — Test Execution Log
+# Kalaga E2E Regression Results
 
 | Field | Value |
 |-------|-------|
-| **Procedure** | [qa-approach.md](qa-approach.md) |
-| **Driver** | [qa-e2e-regression.md](qa-e2e-regression.md) |
-| **Checklist** | [qa-checklist.md](qa-checklist.md) |
-| **Date (UTC)** | 20261124T144919Z |
-| **Version** | 0.6.3 |
-| **Tester** | `npm run test:e2e` (real agents under PTY) |
-| **Verdict** | pass |
+| **Date (UTC)** | 20261127T065954Z |
+| **Version** | 0.8.0 |
+| **Mode** | full |
+| **Run root** | `/tmp/kala-v080-e2e` |
+| **KALA_HOME** | `/tmp/kala-v080-e2e/kala-home` |
+| **Node** | v24.14.0 |
+| **OS** | Linux 7.2.15-76070215-generic x86_64 |
+| **Agents on PATH** | claude cursor agy grok (count=4) |
+| **stdin TTY** | yes |
 
-## Environment
-
-| Item | Value |
-|------|-------|
-| OS | Linux 7.1.5-76070105-generic x86_64 |
-| Node | v24.22.1 |
-| Harness | `scripts/qa-e2e-regression.sh --full` |
-| PTY driver | `tests/e2e/pty_drive.py` |
-| `$KALA_HOME` | `.e2e-runs/20261124T144919Z/kala-home` |
-| Repo under test | `.e2e-runs/20261124T144919Z/repo` |
-| Agents on PATH | `agy`, `cursor-agent`, `claude`, `grok` |
-| Interactive TTY | No (PTY allocated by driver) |
-
-## Results (mapped to procedure IDs)
+## Results
 
 | ID | Result | Evidence |
 |----|--------|----------|
@@ -38,41 +27,37 @@
 | S-13 | Pass | clear error, no hang |
 | S-14 | Pass | clear recover message |
 | S-15 | Pass | trust list + revoke --all |
-| F-01 | Pass | `kala run agy` under PTY; owner=agy |
-| F-02 | Pass | clean exit → stay; nothing launched |
-| F-03 | Pass | `kala run cursor` under PTY; owner=cursor |
-| F-04 | Pass | covered by F-01 (agy) |
-| F-10 | Pass | switch agy→claude; owner=claude |
-| F-11 | Pass | goal continuity retained |
-| F-12 | Pass | owner=claude; goal retained |
-| F-13 | Pass | third agent owner=cursor |
-| F-14 | Pass | live-ask path observed (merge or soft-fail) |
-| F-15 | Pass | `--strict-state` refused; owner unchanged |
-| F-20 | Pass | `kala resume cursor`; Kalaga post-exit path observed |
-| F-21 | Pass | recover documented message (no external limit in this run) |
+| R-01 | Pass | npm test ok (97 passed) |
+| R-02 | Pass | non-TTY bare kala did not auto-launch |
+| R-03 | Pass | workflow present (.github/workflows/test.yml); green checked on push |
+| F-15 | Pass | strict-state refused; owner='' |
+| H-01 | Pass | hooks install/status/uninstall ok |
+| H-02 | Pass | claude _hook PostToolUse + Stop + stop_hook_active guard ok |
+| H-03 | Pass | agy _hook PostToolUse + PreInvocation + Stop + guards ok |
+| H-04 | Pass | cursor _hook PostToolUse + Stop + loop/overlap guards ok |
+| H-05 | Pass | grok _hook PostToolUse + Stop + shutdown/overlap guards ok |
+| F-01 | Pass | kala run agy under PTY; owner=agy |
+| F-02 | Pass | returned to shell after stay (driver Enter); no second launch |
+| F-03 | Pass | kala run cursor under PTY (ec=0 owner=cursor) |
 | F-30 | Pass | Kalaga cold trust prompt observed |
 | F-31 | Pass | grant listed after affirmative |
-| R-01 | Pass | npm test — 45 passed |
-| R-02 | Pass | non-TTY bare kala did not auto-launch |
-| R-03 | Pass | workflow present (`.github/workflows/test.yml`) |
+| F-04 | Pass | covered by F-01 (agy) |
+| F-10 | Pass | owner advanced to claude (pty exit 2) |
+| F-11 | Pass | goal continuity retained |
+| F-12 | Pass | owner=claude goal retained |
+| F-14 | Pass | switch seam completed (live-ask fail-soft by contract) |
+| F-13 | Pass | third agent owner=cursor |
+| F-20 | Pass | kala resume cursor (ec=0; Kalaga post-exit path observed) |
+| F-21 | Pass | recover responded with documented message (no external limit in this run) |
 | R-04 | Pass | auto subset executed inside full run |
-| R-05 | Pass | full real-agent run; zero Fail |
+| R-05 | Pass | full real-agent run zero Fail (Blocked=0) |
 
 ## Summary
 
 | Pass | Fail | Blocked |
 |------|------|---------|
-| 30 | 0 | 0 |
+| 35 | 0 | 0 |
 
-## Defects
+**Verdict:** pass
 
-None opened from this execution.
-
-## Sign-off
-
-| Role | Name | Date | Verdict |
-|------|------|------|---------|
-| Tester | E2E harness | 2026-11-24 | pass |
-| Approver | | | |
-
-Artifacts: `.e2e-runs/20261124T144919Z/` (`results.md`, `logs/`, `repo/`, `kala-home/`).
+Artifacts under `/tmp/kala-v080-e2e` (logs/, results.md, repo/, kala-home/).

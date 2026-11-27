@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-11-27
+
+Continuous checkpointing hooks across all four supported CLIs (`claude`, `agy`, `cursor`, `grok`), Node 22 LTS support (`>=22.18.0`), and post-v0.7.0 UX/handoff hardening.
 
 ### Runtime & CI
 
 - Lowered minimum supported Node.js engine to `>=22.18.0` (covering Maintenance LTS 22 alongside 24 and 26) and updated CI (`.github/workflows/test.yml`) to test across Node 22, 24, and 26 including a packaged tarball install smoke test.
 
-### Continuous checkpointing (FEAT-004 v2 / v3, CERT-008)
+### Continuous checkpointing (FEAT-004 v2 / v3, CERT-008 / CERT-009)
 
 - Extended lifecycle checkpoint hooks to all four agents (`claude`, `agy`, `cursor`, `grok`), adding `.cursor/hooks.json` and `.grok/hooks/kalaga-checkpoint.json` install/status/uninstall support, `workspace_roots`/`workspaceRoot` root resolution, Grok teardown `Stop` filtering (`reason: "end_turn"`), and cross-vendor overlap / `tool_use_id` deduplication so coexisting configs never double-count edits.
 - New `kala hooks install [--agents claude,agy,cursor,grok]`, `kala hooks status`, and `kala hooks uninstall` commands for opt-in, non-destructive project hook wiring (`install` defaults to installed supported CLIs found on `PATH` and errors clearly if none are present, with `.gitignore` warnings for machine-local files and a missing-binary shell guard for `agy`; `status` isolates per-agent config errors).

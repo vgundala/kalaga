@@ -5,8 +5,8 @@
 | **Procedure** | [qa-approach.md](qa-approach.md) |
 | **Driver** | [qa-e2e-regression.md](qa-e2e-regression.md) (`npm run test:e2e`) |
 | **Results log** | [qa-results.md](qa-results.md) |
-| **Version under test** | 0.6.3 |
-| **Date** | 2026-11-24 |
+| **Version under test** | 0.8.0 |
+| **Date** | 2026-11-27 |
 | **Tester** | `npm run test:e2e` (PTY driver + real agents) |
 
 Mark each ID: **P** (pass) / **F** (fail) / **B** (blocked). Failures require evidence in the results log.
@@ -61,6 +61,16 @@ Mark each ID: **P** (pass) / **F** (fail) / **B** (blocked). Failures require ev
 | F-30 Cold trust | P |
 | F-31 Grant listed / reused | P |
 
+## Continuous checkpointing hooks
+
+| ID | P/F/B |
+|----|-------|
+| H-01 `hooks install/status/uninstall` | P |
+| H-02 `claude _hook` PostToolUse + Stop | P |
+| H-03 `agy _hook` PostToolUse + PreInvocation + Stop | P |
+| H-04 `cursor _hook` PostToolUse + Stop + guards | P |
+| H-05 `grok _hook` PostToolUse + Stop + guards | P |
+
 ## Regression
 
 | ID | P/F/B |
@@ -75,4 +85,4 @@ Mark each ID: **P** (pass) / **F** (fail) / **B** (blocked). Failures require ev
 
 | Verdict | Approver | Date |
 |---------|----------|------|
-| pass | E2E harness (`20261124T144919Z`) | 2026-11-24 |
+| pass | E2E harness (`20261127T065954Z`) | 2026-11-27 |

@@ -4,7 +4,7 @@
 |-------|-------|
 | **ID** | FEAT-004 |
 | **Version** | v3 |
-| **Status** | `certify` |
+| **Status** | `done` (`CERT-009` pass) |
 | **Date** | 2026-11-27 |
 | **Supersedes** | `FEAT-004 v2` (`done`, `CERT-008`; Phase 1 `claude` + `agy` only) |
 | **Owner** | Technical lead |
