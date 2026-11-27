@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { ensureKalagaHome, kalagaHome } from './config.ts';
+import { parseYamlScalar } from './util/yaml.ts';
 
 export interface TrustGrant {
   path: string;         // fs.realpathSync of the repo dir
@@ -51,12 +52,12 @@ function readGrants(): TrustGrant[] {
       const item = line.match(/^\s*-\s*path:\s*(.+)$/);
       if (item) {
         if (cur) pushGrant(grants, cur);
-        cur = { path: unquote(item[1].trim()) };
+        cur = { path: parseYamlScalar(item[1]) };
         continue;
       }
       const kv = line.match(/^\s{2,8}(granted_at|expires_at):\s*(.+)$/);
       if (kv && cur) {
-        (cur as Record<string, string>)[kv[1]] = unquote(kv[2].trim());
+        (cur as Record<string, string>)[kv[1]] = parseYamlScalar(kv[2]);
         continue;
       }
     }
@@ -70,10 +71,6 @@ function readGrants(): TrustGrant[] {
 
 function pushGrant(grants: TrustGrant[], g: Partial<TrustGrant>): void {
   if (g.path && g.granted_at && g.expires_at) grants.push({ path: g.path, granted_at: g.granted_at, expires_at: g.expires_at });
-}
-
-function unquote(s: string): string {
-  return s.replace(/^"|"$/g, '');
 }
 
 function writeGrants(grants: TrustGrant[]): void {
@@ -146,18 +143,21 @@ export function revokeTrust(target: string | null, all: boolean): void {
 }
 
 /** T6: Option A cold-start prompt. Returns true if the user granted.
- *  Non-TTY stdin (pipes/tests) → no prompt, no grant (safe default). */
+ *  Non-TTY stdin (pipes/tests) → no prompt, no grant (safe default).
+ *  Separate from the agent picker — answers y/n (one key on a TTY). */
 export async function promptTrustGrant(repoDir: string): Promise<boolean> {
   if (hasTrustGrant(repoDir)) return true;
   if (!process.stdin.isTTY) return false;
-  process.stderr.write(`Trust this directory for Kalaga handoffs? [y/N] `);
-  const { createInterface } = await import('node:readline');
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const ans = await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }));
+  process.stderr.write(
+    `Kalaga path trust (separate from the picker) — allow --trust flags in this directory? [y/N] `,
+  );
+  const { readSingleKeyOrLine } = await import('./util/ttyask.ts');
+  const ans = await readSingleKeyOrLine();
   if (ans.trim().toLowerCase() === 'y') {
     recordTrustGrant(repoDir);
     process.stderr.write(`  trust recorded for ${fs.realpathSync(repoDir)} (TTL ${trustTtlDays()}d)\n`);
     return true;
   }
+  process.stderr.write(`  skipped — launching without vendor --trust flags\n`);
   return false;
 }

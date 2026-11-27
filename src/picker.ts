@@ -1,13 +1,12 @@
-// Interactive "continue on →" picker. Reads a single keypress from stdin,
-// no dependencies. Shows a numbered shortlist.
+// Interactive "continue on →" picker. One keypress on a TTY (no Enter).
 //   limit tier (default): Enter = recommended pick
 //   clean tier (stayDefault): Enter = stay / back to shell (FEAT-001 E7)
 //   off-TTY / EOF: stay (never auto-launch from a closed pipe)
 // `q` / `e` = stay, in every tier (E8).
-import { createInterface } from 'node:readline';
 import process from 'node:process';
 import type { Recommendation } from './router.ts';
 import type { AgentUsage } from './ledger.ts';
+import { readSingleKeyOrLine } from './util/ttyask.ts';
 
 export interface PickResult {
   agent: string;      // chosen agent key (meaningless when stay)
@@ -21,6 +20,8 @@ export interface PickOptions {
   /** Header line above the shortlist (defaults by mode). */
   header?: string;
   onKey?: (k: string) => void;
+  /** Test seam: skip stdin and use this answer (same as a typed key/line). */
+  answer?: string;
 }
 
 /** Pure answer decoder — unit-tested. Off-TTY empty/garbage → stay. */
@@ -43,7 +44,7 @@ export function interpretPickAnswer(
 
 /** Render + prompt. Returns the user's choice. `dead` is the exhausted
  *  agent (offers a "wait for reset" row); null = start mode, no dead agent. */
-export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string | null, opts: PickOptions = {}): Promise<PickResult> {
+export async function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string | null, opts: PickOptions = {}): Promise<PickResult> {
   const byKey = Object.fromEntries(ledger.map((u) => [u.agent, u]));
   const lines: string[] = [];
   lines.push(opts.header ?? (dead ? `  continue on →` : `  start with →`));
@@ -51,52 +52,32 @@ export function pick(recs: Recommendation[], ledger: AgentUsage[], dead: string 
     const u = byKey[r.agent];
     const star = i === 0 ? '*' : ' ';
     const head = u ? `${fmtRemain(u.remaining)} left` : 'unknown';
-    const caveat = r.agent === 'claude'
-      ? ' · Claude folder trust is Claude\'s, not Kalaga\'s'
-      : '';
-    lines.push(`  ${star} [${i + 1}] ${r.agent.padEnd(8)} ${head.padEnd(14)} ${r.reason}${caveat}`);
+    lines.push(`  ${star} [${i + 1}] ${r.agent.padEnd(8)} ${head.padEnd(14)} ${r.reason}`);
   });
-  if (recs.some((r) => r.agent === 'claude')) {
-    lines.push(`  note: if you pick Claude, its own "trust this folder?" prompt may appear first`);
-  }
   if (dead) {
     lines.push(`      [0] ${dead.padEnd(8)} ${'wait for reset'.padEnd(14)} keep it pinned`);
   }
   lines.push(opts.stayDefault
-    ? `  (Enter = stay / back to shell, number = hand off, q = stay)`
+    ? `  (one key: Enter = stay, number = hand off, q = stay)`
     : dead
-      ? `  (Enter = * recommendation, number to override, 0 = wait, q = stay)`
-      : `  (Enter = * recommendation, number to override, q = stay)`);
+      ? `  (one key: Enter = * recommendation, number = override, 0 = wait, q = stay)`
+      : `  (one key: Enter = * recommendation, number = override, q = stay)`);
   process.stderr.write(lines.join('\n') + '\n');
 
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise<PickResult>((resolve) => {
-    let settled = false;
-    const finish = (ans: string): void => {
-      if (settled) return;
-      settled = true;
-      opts.onKey?.(ans);
-      const decoded = interpretPickAnswer(ans, {
-        stayDefault: opts.stayDefault,
-        hasDead: !!dead,
-        recCount: recs.length,
-        stdinIsTTY: !!process.stdin.isTTY,
-      });
-      if (decoded === 'stay') { resolve({ agent: recs[0]?.agent ?? '', wait: false, stay: true }); return; }
-      if (decoded === 'wait') { resolve({ agent: dead!, wait: true }); return; }
-      resolve({ agent: recs[decoded].agent, wait: false });
-    };
-    // Ctrl+D closes readline without a question callback.
-    rl.once('close', () => {
-      if (settled) return;
-      settled = true;
-      resolve({ agent: recs[0]?.agent ?? '', wait: false, stay: true });
-    });
-    rl.question('', (ans) => {
-      finish(ans);
-      rl.close();
-    });
+  const ans = opts.answer !== undefined ? opts.answer : await readSingleKeyOrLine();
+  opts.onKey?.(ans);
+  const decoded = interpretPickAnswer(ans, {
+    stayDefault: opts.stayDefault,
+    hasDead: !!dead,
+    recCount: recs.length,
+    stdinIsTTY: !!process.stdin.isTTY,
   });
+  if (decoded === 'stay') return { agent: recs[0]?.agent ?? '', wait: false, stay: true };
+  if (decoded === 'wait') return { agent: dead!, wait: true };
+  const agent = recs[decoded].agent;
+  // Immediate ack — refresh/trust/spawn can take a beat; don't leave a blank stare.
+  process.stderr.write(`  → ${agent} — preparing…\n`);
+  return { agent, wait: false };
 }
 
 function fmtRemain(n: number): string {

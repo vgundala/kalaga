@@ -88,6 +88,10 @@ kala why [deadAgent]               Dry-run taker ranking
 kala state                         Print the handoff state as JSON
 kala state goal|next|note|neg|done [text]
                                    Set that field, or print it when text is omitted
+kala hooks install [--agents claude,agy]
+                                   Install/merge checkpoint hooks in this repo
+kala hooks status                  Show installed hooks + last checkpoint age
+kala hooks uninstall               Remove Kalaga hooks (keep user hooks)
 kala trust                         List trust grants
 kala trust revoke <path|--all>
 kala agents                        List known agent keys
@@ -129,6 +133,8 @@ a limit assumption nobody saw.
 
 **Live-ask:** `kala switch` may ask the previous agent for a YAML update when Kalaga still has a fresh session id for that agent (headless, 15 second timeout). The call resumes that session and passes the vendor trust flag when this directory already has a Kalaga grant. A limit exit does not ask the agent that just ran out. If the ask fails, the existing state stays.
 
+**Continuous checkpointing (`kala hooks`):** Run `kala hooks install` in a project to wire opt-in, non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`) and/or Antigravity (`.agents/hooks.json`) — or pass `--agents claude,agy` explicitly. While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` and nudges the active agent to refresh `.kala/state.yaml` when stale (mid-turn and at `Stop`). Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` to remove only Kalaga entries cleanly.
+
 **Same-agent continuity:** `kala resume` reopens a captured session id when the vendor supports it. The conversation already has context, so Kalaga does not inject a handoff prompt. Session ids are discovered from each vendor’s local store when a stable signature exists (Claude jsonl, Cursor chat meta, Grok sqlite, Antigravity `~/.gemini/antigravity-cli`).
 
 **Headroom:** `kala status` labels Claude and Grok `[logged]` (usage recorded in the local store; Claude counts turns from the last 5 hours). Cursor is `[est.]`. agy shows no token spend (no public usage API); its conversation id is still captured for resume and live-ask when present. These are not the vendor’s remaining balance.
@@ -141,7 +147,7 @@ Kalaga owns the handoff contract (`.kala/state.yaml`, switch, resume, ranking). 
 
 | Seam | What you see | Kalaga’s stance |
 |------|----------------|-----------------|
-| **Claude folder trust** | Claude’s own “trust this folder?” (often defaults to No / exit) | Shown in the picker when Claude is listed, and again on stderr before launch. Kalaga’s `trust.yaml` does not cover this. |
+| **Claude folder trust** | Claude’s own “trust this folder?” (often defaults to No / exit) | Noted on stderr right before Claude launches. Kalaga’s `trust.yaml` does not cover this. |
 | **Antigravity (agy) sessions** | Resume / live-ask after `agy` | Ids from `~/.gemini/antigravity-cli/cache/last_conversations.json` when `conversations/<uuid>.db` exists. No token ledger. |
 | **Grok live-ask** | Large sessions may exceed the 15s ask | Headless ask uses low reasoning / one turn; on miss: keep existing `state.yaml`. |
 | **Cursor headroom** | `[est.]` in `kala status` | Coarse heuristic only; not quota. |
@@ -158,6 +164,12 @@ Per-user files live under `~/.kala/` (`config.yaml`, `trust.yaml`). Override wit
 # ~/.kala/config.yaml (optional) — no token ceilings to tune
 inject_rich_prompt: false
 trust_ttl_days: 30
+hooks:
+  enabled: true
+  edit_threshold: 5
+  max_age_minutes: 10
+  cooldown_minutes: 3
+  timeout_seconds: 5
 ```
 
 Headroom numbers in `kala status` use fixed builtin ceilings. Claude and Grok are labeled `[logged]`; Cursor is `[est.]`; agy tokens stay unset. Limit-detection phrases and binary names live in `src/config.ts`.
@@ -168,7 +180,7 @@ See **[SECURITY.md](SECURITY.md)** for the trust model, guarantees, and residual
 
 Summary: trust flags are never invented; inject fields and resume session ids are constrained; state writes refuse symlinks; there is no network client and no runtime npm dependencies. Agents inherit your environment and may read on-disk `.kala/state.yaml` beyond the sanitized inject—treat that file as untrusted in hostile repos.
 
-**Claude folder trust:** Kalaga’s grant does not cover Claude Code. The picker notes it when Claude is a taker; on launch Kalaga repeats the caveat on stderr. On a folder Claude has not accepted yet, Claude often defaults to “No, exit”—press Down, then Enter, to trust it. That prompt is Claude’s.
+**Claude folder trust:** Kalaga’s grant does not cover Claude Code. Before launching Claude, Kalaga prints a reminder on stderr. On a folder Claude has not accepted yet, Claude often defaults to “No, exit”—press Down, then Enter, to trust it. That prompt is Claude’s.
 
 ## Testing and CI
 

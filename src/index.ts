@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { agentFor, isInstalled, stateFile } from './config.ts';
+import { agentFor, isInstalled, resolveExecutable, stateFile } from './config.ts';
 import type { AgentConfig } from './config.ts';
 import { readLedger } from './ledger.ts';
 import { loadState, mergeState, blankState, saveState, captureSession, isThinState } from './state/state.ts';
@@ -34,10 +34,12 @@ import { scanChunk, classifyExit } from './trap.ts';
 import { hasTrustGrant, promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
 import { handoffInject, nextStepHint, injectRichPrompt, STANDING_ORDERS, FIELD_MAX, sanitizeHandoffField } from './prompt.ts';
 import { liveAskAndMerge } from './liveask.ts';
+import { readSingleKeyOrLine } from './util/ttyask.ts';
 
 const repoDir = process.cwd();
 const MAX_HANDOFF_HOPS = 8;
 const KNOWN_FLAGS = new Set(['--assume-limit', '--strict-state', '--force', '--all']);
+const VALUE_FLAGS = new Set(['--agent', '--event', '--agents']);
 
 function fmt(n: number): string { return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n); }
 
@@ -163,9 +165,10 @@ async function offerHandoff(deadKey: string | null): Promise<LaunchResult | null
     console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
   }
   const fromOwner = state.owner ?? deadKey ?? null;
+  console.error(`kalaga: writing handoff state…`);
   const st = mergeState(repoDir, { owner: next.key, ...activeStatusPatch(state) }, 'tailer');
   const trust = await resolveTrust(next);
-  console.error(`kalaga → handing off to ${next.key}`);
+  console.error(`kalaga → launching ${next.key} now`);
   const exitCode = await runAgent(next, repoDir, handoffInject(st, injectRichPrompt(), fromOwner), trust);
   return { agent: next.key, exitCode };
 }
@@ -174,7 +177,8 @@ async function offerHandoff(deadKey: string | null): Promise<LaunchResult | null
 function exitNotice(agentKey: string, exitCode: number, hit: ReturnType<typeof scanChunk>, hasTail: boolean): void {
   if (hit) console.error(`  kalaga: limit hit — ${agentKey} (matched "${hit.matched}")`);
   else if (!hasTail && exitCode !== 0) console.error(`  kalaga: ${agentKey} exited (code ${exitCode}) — no session log to scan`);
-  else console.error(`  kalaga: ${agentKey} exited cleanly (code ${exitCode}).`);
+  else if (exitCode !== 0) console.error(`  kalaga: ${agentKey} exited (code ${exitCode}) — no limit signature in log.`);
+  else console.error(`  kalaga: ${agentKey} exited cleanly (code 0).`);
 }
 
 /** `--assume-limit` gate. On a TTY the flag alone suffices. Off-TTY the flag
@@ -189,11 +193,10 @@ async function confirmAssumeLimit(deadKey: string, exitCode: number): Promise<bo
   if (assumeLimitFlagged()) return true;
   if (!process.stdin.isTTY) return false;
   process.stderr.write(`  assume it hit its limit? [y/N] `);
-  const { createInterface } = await import('node:readline');
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const ans = await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }));
-  if (ans.trim().toLowerCase() === 'y') console.error(`  kalaga: limit hit assumed — ${deadKey} (code ${exitCode}, no store to verify)`);
-  return ans.trim().toLowerCase() === 'y';
+  const ans = await readSingleKeyOrLine();
+  const ok = ans.trim().toLowerCase() === 'y';
+  if (ok) console.error(`  kalaga: limit hit assumed — ${deadKey} (code ${exitCode}, no store to verify)`);
+  return ok;
 }
 
 /** Shared post-exit flow. `hop` counts handoffs already taken so a loop of
@@ -209,8 +212,13 @@ async function afterExit(agentKey: string, exitCode: number, hop = 0): Promise<v
   const cfg = agentFor(agentKey);
   const tail = (await lastSessionText(cfg, repoDir)).slice(-4000);
   const hit = tail ? scanChunk(tail, cfg, exitCode) : null;
-  const tier = classifyExit({ hit, exitCode, hasTail: tail !== '' });
-  exitNotice(agentKey, exitCode, hit, tail !== '');
+  if (exitCode === 127 && !hit) {
+    await refreshState(null);
+    return;
+  }
+  const hasTail = tail !== '' && !(agentKey === 'agy' && !hit && exitCode !== 0);
+  const tier = classifyExit({ hit, exitCode, hasTail });
+  exitNotice(agentKey, exitCode, hit, hasTail);
 
   if (tier === 'limit') {
     const launched = await offerHandoff(agentKey);
@@ -241,10 +249,11 @@ async function afterExit(agentKey: string, exitCode: number, hop = 0): Promise<v
     console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
   }
   const fromOwner = st.owner;
+  console.error(`kalaga: writing handoff state…`);
   const st2 = mergeState(repoDir, { owner: next.key, ...activeStatusPatch(st) });
   console.error(`  ${nextStepHint(st2)}`);
   const trust = await resolveTrust(next);
-  console.error(`kalaga → handing off to ${next.key}`);
+  console.error(`kalaga → launching ${next.key} now`);
   const code = await runAgent(next, repoDir, handoffInject(st2, injectRichPrompt(), fromOwner), trust);
   await afterExit(next.key, code, hop + 1);
 }
@@ -267,6 +276,7 @@ async function doStart(): Promise<void> {
   if (choice.stay) { console.error('kalaga: staying put — nothing launched.'); return; }
   const next = agentFor(choice.agent);
   const fromOwner = existing?.owner ?? null;
+  console.error(`kalaga: refreshing handoff state…`);
   const pre = await refreshState(null);
   const st = mergeState(repoDir, {
     owner: next.key,
@@ -277,7 +287,7 @@ async function doStart(): Promise<void> {
   });
   const fresh = st.goal.startsWith('not captured');
   const trust = await resolveTrust(next);
-  console.error(`kalaga → starting ${next.key}`);
+  console.error(`kalaga → launching ${next.key} now`);
   if (fresh) console.error(`kalaga: ${STANDING_ORDERS} Set goal + next_step (kala state goal "…" / kala state next "…").`);
   const prompt = fresh
     ? (existing ? `${STANDING_ORDERS} Set goal + next_step (kala state goal "…" / kala state next "…").` : null)
@@ -288,6 +298,11 @@ async function doStart(): Promise<void> {
 
 async function doRun(agentKey: string): Promise<void> {
   const agent = agentFor(agentKey);
+  if (!resolveExecutable(agent.interactive[0])) {
+    console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);
+    process.exitCode = 1;
+    return;
+  }
   const existed = loadState(repoDir);
   const pre = await refreshState(null);
   const fromOwner = existed?.owner ?? null;
@@ -326,9 +341,7 @@ async function doRecover(): Promise<void> {
     let ok = assume;
     if (!ok && process.stdin.isTTY) {
       process.stderr.write(`  no session log to scan for ${dead} — assume it hit its limit? [y/N] `);
-      const { createInterface } = await import('node:readline');
-      const rl = createInterface({ input: process.stdin, output: process.stderr });
-      ok = (await new Promise<string>((res) => rl.question('', (a) => { rl.close(); res(a); }))).trim().toLowerCase() === 'y';
+      ok = (await readSingleKeyOrLine()).trim().toLowerCase() === 'y';
     }
     if (!ok) { console.error('kalaga: not assuming a limit hit — rerun with --assume-limit or confirm.'); return; }
     console.error(`  kalaga: limit hit assumed — ${dead} (no store to verify)`);
@@ -357,6 +370,11 @@ async function doSwitch(agentKey: string): Promise<void> {
     }
     console.error('kalaga: handoff state looks thin — taker may drift. Run live-ask, or: kala state …');
   }
+  if (!resolveExecutable(agent.interactive[0])) {
+    console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);
+    process.exitCode = 1;
+    return;
+  }
   const fromOwner = pre.owner;
   const owned = mergeState(repoDir, { owner: agent.key, ...activeStatusPatch(after) });
   const trust = await resolveTrust(agent);
@@ -379,6 +397,11 @@ async function doResume(agentKey: string | null): Promise<void> {
   }
   if (!(await sessionFresh(agent, repoDir, rec))) {
     console.error(`kalaga: captured session for ${key} is stale (>7 days or artifact gone) — start fresh: kala run ${key}`);
+    return;
+  }
+  if (!resolveExecutable(agent.interactive[0])) {
+    console.error(`kalaga: ${agent.key} binary not found (looked for '${agent.interactive[0]}') — install it or check PATH`);
+    process.exitCode = 1;
     return;
   }
   mergeState(repoDir, { owner: agent.key, ...activeStatusPatch(state) });
@@ -466,6 +489,10 @@ function printHelp(): void {
   kala state                print the handoff state as JSON
   kala state goal|next|note|neg|done [text]
                             set that field, or print it when text is omitted
+  kala hooks install [--agents claude,agy]
+                            install/merge checkpoint hooks in this repo
+  kala hooks status         show installed hooks + last checkpoint age
+  kala hooks uninstall      remove Kalaga hooks (preserve user hooks)
   kala agents               list known agent keys
   kala --version            print version
 
@@ -474,6 +501,7 @@ function printHelp(): void {
     --assume-limit          on a TTY, treat a store-less exit as a limit hit
     --strict-state          kala switch refuses while the handoff state is thin
     --force                 kala init replaces an existing state file
+    --agents <list>         comma-separated hook agents (claude,agy)
 
   Headroom for Claude and Grok is labeled [logged] (what the local store
   recorded). Cursor is [est.]. agy tokens stay unset; session ids come from
@@ -484,11 +512,35 @@ function printHelp(): void {
 
 async function main(): Promise<void> {
   const raw = process.argv.slice(2);
+  if (raw[0] === '_hook') {
+    const { runHookCli } = await import('./hook.ts');
+    await runHookCli(raw.slice(1));
+    return;
+  }
   const positionals: string[] = [];
-  for (const a of raw) {
+  const flagValues = new Map<string, string>();
+  for (let i = 0; i < raw.length; i++) {
+    const a = raw[i];
     if (KNOWN_FLAGS.has(a)) continue;
     if (a === '-v' || a === '--version') { printVersion(); return; }
     if (a === '-h' || a === '--help') { printHelp(); return; }
+    const eqIdx = a.indexOf('=');
+    const flagName = eqIdx > 0 ? a.slice(0, eqIdx) : a;
+    if (VALUE_FLAGS.has(flagName)) {
+      if (eqIdx > 0) {
+        flagValues.set(flagName, a.slice(eqIdx + 1));
+      } else {
+        const next = raw[i + 1];
+        if (next === undefined || next.startsWith('-')) {
+          printHelp();
+          process.exitCode = 2;
+          return;
+        }
+        flagValues.set(flagName, next);
+        i++;
+      }
+      continue;
+    }
     if (a.startsWith('-')) {
       printHelp();
       process.exitCode = 2;
@@ -497,7 +549,32 @@ async function main(): Promise<void> {
     positionals.push(a);
   }
   const [cmd, ...rest] = positionals;
+  if (cmd !== '_hook' && (flagValues.has('--agent') || flagValues.has('--event'))) {
+    printHelp();
+    process.exitCode = 2;
+    return;
+  }
+  if (cmd !== 'hooks' && flagValues.has('--agents')) {
+    printHelp();
+    process.exitCode = 2;
+    return;
+  }
   switch (cmd) {
+    case '_hook': {
+      const { runHookCli } = await import('./hook.ts');
+      const hookArgs: string[] = [];
+      const ag = flagValues.get('--agent');
+      const ev = flagValues.get('--event');
+      if (ag !== undefined) hookArgs.push('--agent', ag);
+      if (ev !== undefined) hookArgs.push('--event', ev);
+      await runHookCli(hookArgs);
+      break;
+    }
+    case 'hooks': {
+      const { runHooksCli } = await import('./hooks.ts');
+      runHooksCli(rest[0], repoDir, { agents: flagValues.get('--agents') });
+      break;
+    }
     case 'status': await printStatus(); break;
     case 'why': await printWhy(rest[0] ?? null); break;
     case 'run': if (!rest[0]) throw new Error('usage: kala run <agent>'); await doRun(rest[0]); break;

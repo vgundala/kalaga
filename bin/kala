@@ -5,6 +5,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const dist = join(here, '..', 'dist', 'index.js');
-const src = join(here, '..', 'src', 'index.ts');
-await import(pathToFileURL(existsSync(dist) ? dist : src).href);
+if (process.argv[2] === '_hook') {
+  try {
+    const distHook = join(here, '..', 'dist', 'hook.js');
+    const srcHook = join(here, '..', 'src', 'hook.ts');
+    const mod = await import(pathToFileURL(existsSync(distHook) ? distHook : srcHook).href);
+    await mod.runHookCli(process.argv.slice(3));
+  } catch {
+    process.stdout.write('{}\n');
+    process.exitCode = 0;
+  }
+} else {
+  const dist = join(here, '..', 'dist', 'index.js');
+  const src = join(here, '..', 'src', 'index.ts');
+  await import(pathToFileURL(existsSync(dist) ? dist : src).href);
+}

@@ -37,12 +37,17 @@ function matchWindow(line: string, pat: string): string {
   return line.slice(start, end).trim().slice(0, 200);
 }
 
+const ECHOED_KALAGA_LINE = /^\s*(?:Kalaga (?:handoff from|session context)|Avoid:|Maintain \.kala\/state\.yaml)/i;
+const PRIOR_LIMIT_NOTE = /\b(?:agy|cursor|grok|claude)\s+limit\s+hit:/i;
+
 /** Scan a chunk of output; return the first LimitHit found, else null.
  *  The stored line is a ≤200 character window around the match. A clean
  *  exit (code 0) ignores a match buried in a long prose line unless it is
- *  an explicit vendor limit phrase. */
+ *  an explicit vendor limit phrase. Echoed Kalaga handoff/avoid lines are
+ *  skipped so prior limit notes never cause a false-positive cascade. */
 export function scanChunk(chunk: string, agent: AgentConfig, exitCode: number | null = null): LimitHit | null {
   for (const line of chunk.split('\n')) {
+    if (ECHOED_KALAGA_LINE.test(line) || PRIOR_LIMIT_NOTE.test(line)) continue;
     const m = matchLimit(line, agent);
     if (!m) continue;
     if (exitCode === 0 && line.length > 600 && !EXPLICIT_VENDOR_LIMIT.test(line)) continue;

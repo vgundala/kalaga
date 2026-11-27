@@ -18,6 +18,8 @@ Certification records (pass / waive evidence) live under
 | FEAT-001 | [v1](FEAT-001-post-exit-handoff.v1.md) | Evidence-tiered post-exit handoff | `done` |
 | FEAT-002 | [v1](FEAT-002-session-capture-resume.v1.md) | Session capture + `kala resume` | `done` |
 | FEAT-003 | [v1](FEAT-003-handoff-state-protocol.v1.md) | Handoff state protocol + live-ask | `done` |
+| FEAT-004 | [v1](FEAT-004-continuous-checkpointing.v1.md) | Continuous checkpointing via agent lifecycle hooks | `superseded` |
+| FEAT-004 | [v2](FEAT-004-continuous-checkpointing.v2.md) | Continuous checkpointing via agent lifecycle hooks (review fixes) | `done` |
 
 Certify evidence: [`history/README.md`](history/README.md).
 

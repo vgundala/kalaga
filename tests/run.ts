@@ -3,7 +3,7 @@
 // throwaway dir under os.tmpdir(), removed on exit. Never touches the real
 // ~/.claude or ~/.kala (HOME + KALA_HOME are redirected for the run).
 import assert from 'node:assert';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -308,7 +308,7 @@ await test('agy: sessionFresh requires conversations/<id>.db within TTL', async 
   fs.unlinkSync(db);
   assert.strictEqual(await launch.sessionFresh(cfg.AGENTS.agy, ROOT, { id: sid, at: recent }), false);
 });
-await test('picker: Claude row + note show folder-trust caveat', async () => {
+await test('picker: no Claude folder-trust noise (launch owns that caveat)', async () => {
   const chunks: string[] = [];
   const origWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, enc?: BufferEncoding | ((err?: Error | null) => void), cb?: (err?: Error | null) => void) => {
@@ -318,7 +318,7 @@ await test('picker: Claude row + note show folder-trust caveat', async () => {
     return true;
   }) as typeof process.stderr.write;
   try {
-    const p = picker.pick(
+    const result = await picker.pick(
       [
         { agent: 'cursor', reason: 'unused this window', score: 2 },
         { agent: 'claude', reason: 'unused this window', score: 1 },
@@ -328,14 +328,45 @@ await test('picker: Claude row + note show folder-trust caveat', async () => {
         { agent: 'claude', installed: true, tokens: 0, exact: true, ceiling: 100, remaining: 100, lastUsed: null, sessionHint: null },
       ],
       null,
+      { answer: 'q' },
     );
-    process.stdin.push('q\n');
-    await p;
+    assert.ok(result.stay);
     const out = chunks.join('');
-    assert.match(out, /Claude folder trust is Claude's, not Kalaga's/);
-    assert.match(out, /trust this folder\?/);
-    const cursorLine = out.split('\n').find((l) => l.includes('[1] cursor'));
-    assert.ok(cursorLine && !cursorLine.includes('Claude folder trust'));
+    assert.doesNotMatch(out, /Claude folder trust/);
+    assert.doesNotMatch(out, /trust this folder\?/);
+    assert.match(out, /one key:/);
+    assert.match(out, /\[1] cursor/);
+    assert.match(out, /\[2] claude/);
+  } finally {
+    process.stderr.write = origWrite;
+  }
+});
+await test('picker: number choice acks immediately (preparing)', async () => {
+  const chunks: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array, enc?: BufferEncoding | ((err?: Error | null) => void), cb?: (err?: Error | null) => void) => {
+    chunks.push(String(chunk));
+    if (typeof enc === 'function') enc(null);
+    else if (typeof cb === 'function') cb(null);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    // opts.answer avoids flaky stdin.push on a real TTY.
+    const result = await picker.pick(
+      [
+        { agent: 'cursor', reason: 'unused', score: 2 },
+        { agent: 'claude', reason: 'unused', score: 1 },
+      ],
+      [
+        { agent: 'cursor', installed: true, tokens: 0, exact: false, ceiling: 100, remaining: 100, lastUsed: null, sessionHint: null },
+        { agent: 'claude', installed: true, tokens: 0, exact: true, ceiling: 100, remaining: 100, lastUsed: null, sessionHint: null },
+      ],
+      null,
+      { answer: '2' },
+    );
+    assert.strictEqual(result.agent, 'claude');
+    assert.ok(!result.stay);
+    assert.match(chunks.join(''), /→ claude — preparing/);
   } finally {
     process.stderr.write = origWrite;
   }
@@ -689,6 +720,7 @@ await test('build dist and npm pack runs as plain JS', () => {
   fs.mkdirSync(packDir);
   const listed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
     cwd: REPO, encoding: 'utf8',
+    env: { ...process.env, npm_config_cache: path.join(ROOT, 'npm-cache') },
   }).trim().split('\n').pop()!;
   const extract = path.join(ROOT, 'nm');
   fs.mkdirSync(path.join(extract, 'node_modules'), { recursive: true });
@@ -784,6 +816,1043 @@ await test('init refuses to clobber unless --force; switch --strict-state works 
   assert.strictEqual(strict.status, 0, strict.stderr);
   assert.match(strict.stderr, /refusing to switch/);
   assert.notStrictEqual(state.loadState(cwd)?.owner, 'cursor');
+});
+
+section('FEAT-004: continuous checkpointing hooks (K1–K16)');
+const hook = await import(`${SRC}/hook.ts`);
+const hooks = await import(`${SRC}/hooks.ts`);
+
+function runKalaInput(
+  args: string[],
+  cwd: string,
+  stdinText: string,
+  entry: string = BIN,
+): { status: number | null; stdout: string; stderr: string } {
+  const res = spawnSync(process.execPath, [entry, ...args], {
+    cwd,
+    input: stdinText,
+    encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+await test('K1: hook.ts has minimal imports; _hook hidden from --help; hooks shown', () => {
+  const hookSrc = fs.readFileSync(path.join(SRC, 'hook.ts'), 'utf8');
+  for (const forbidden of ['ledger', 'picker', 'launch', 'liveask', 'trust', 'prompt']) {
+    assert.ok(!new RegExp(`from\\s+['"][^'"]*${forbidden}`).test(hookSrc), `hook.ts must not import ${forbidden}`);
+  }
+  const helpOut = runKala(['--help'], repoDir);
+  assert.strictEqual(helpOut.status, 0);
+  assert.ok(!helpOut.stdout.includes('_hook'), '_hook hidden from --help');
+  assert.ok(helpOut.stdout.includes('hooks install'), 'hooks install shown in --help');
+});
+
+await test('K1: bin/kala _hook fast-path avoids importing ledger/picker/launch/liveask', () => {
+  const hookRepo = path.join(ROOT, 'k1-fastpath');
+  fs.mkdirSync(hookRepo, { recursive: true });
+  state.saveState(hookRepo, state.blankState(hookRepo, 'main'));
+  const probe = [
+    "import { registerHooks } from 'node:module';",
+    'const loaded = [];',
+    'registerHooks({ load(url, ctx, next) { loaded.push(url); return next(url, ctx); } });',
+    `process.argv = [process.execPath, ${JSON.stringify(BIN)}, '_hook', '--agent', 'agy', '--event', 'PostToolUse'];`,
+    `await import(${JSON.stringify(new URL(`file://${BIN}`).href)});`,
+    "console.error('LOADED:' + JSON.stringify(loaded));",
+  ].join('\n');
+  const probed = spawnSync(process.execPath, ['--input-type=module', '-e', probe], {
+    cwd: hookRepo,
+    input: JSON.stringify({ cwd: hookRepo }),
+    encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  assert.strictEqual(probed.status, 0, probed.stderr);
+  assert.deepStrictEqual(JSON.parse(probed.stdout.trim()), {});
+  const loadedLine = (probed.stderr ?? '').split('\n').find((l) => l.startsWith('LOADED:'));
+  assert.ok(loadedLine, `missing LOADED line in: ${probed.stderr}`);
+  const loadedUrls = JSON.parse(loadedLine.slice('LOADED:'.length)) as string[];
+  for (const heavy of ['ledger', 'picker', 'launch', 'liveask']) {
+    assert.ok(!loadedUrls.some((u) => u.includes(heavy)), `fast-path must not load ${heavy}`);
+  }
+
+  // Also verify direct `node src/index.ts _hook ...` works cleanly
+  const viaIndex = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], hookRepo, JSON.stringify({ cwd: hookRepo }), path.join(SRC, 'index.ts'));
+  assert.strictEqual(viaIndex.status, 0);
+  assert.deepStrictEqual(JSON.parse(viaIndex.stdout.trim()), {});
+});
+
+await test('K2: findRepoRoot resolves cwd -> workspacePaths[0] -> fallback and stops at .git', () => {
+  const outer = path.join(ROOT, 'k2-outer');
+  const inner = path.join(outer, 'subproj');
+  const nested = path.join(inner, 'src', 'deep');
+  fs.mkdirSync(nested, { recursive: true });
+  // Outer has .kala/state.yaml, inner has .git WITHOUT .kala/state.yaml
+  state.saveState(outer, state.blankState(outer, 'main'));
+  fs.mkdirSync(path.join(inner, '.git'));
+  assert.strictEqual(hook.findRepoRoot({ cwd: nested }), null, 'must stop at .git root');
+  assert.strictEqual(hook.findRepoRoot({ workspacePaths: [nested] }), null);
+
+  // When inner has .kala/state.yaml alongside .git, it resolves inner
+  state.saveState(inner, state.blankState(inner, 'main'));
+  assert.strictEqual(hook.findRepoRoot({ cwd: nested }), inner);
+  assert.strictEqual(hook.findRepoRoot({ cwd: '', workspacePaths: [nested] }), inner);
+  assert.strictEqual(hook.findRepoRoot({}, nested), inner);
+
+  // Missing state.yaml -> exits 0 with {}
+  const noState = path.join(ROOT, 'k2-nostate');
+  fs.mkdirSync(noState, { recursive: true });
+  const res = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], noState, JSON.stringify({ cwd: noState }));
+  assert.strictEqual(res.status, 0);
+  assert.deepStrictEqual(JSON.parse(res.stdout.trim()), {});
+});
+
+await test('K9: isSelfEdit skips .kala/state.yaml and kala state commands across vendors', () => {
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { file_path: '/repo/.kala/state.yaml' } }), true);
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { file_path: '.kala/state.yaml' } }), true);
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { command: 'kala state done "shipped"' } }), true);
+  assert.strictEqual(hook.isSelfEdit('agy', 'PostToolUse', { toolCall: { args: { TargetFile: '/repo/.kala/state.yaml' } } }), true);
+  assert.strictEqual(hook.isSelfEdit('agy', 'PostToolUse', { toolCall: { args: { Path: '.kala/state.yaml' } } }), true);
+  assert.strictEqual(hook.isSelfEdit('agy', 'PostToolUse', { toolCall: { args: { CommandLine: 'kala state next "test"' } } }), true);
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { command: 'cat >.kala/state.yaml' } }), true);
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { command: 'cp .kala/state.yaml.bak /tmp/bak' } }), false);
+  assert.strictEqual(hook.isSelfEdit('claude', 'PostToolUse', { tool_input: { file_path: '/repo/src/app.ts' } }), false);
+  assert.strictEqual(hook.isSelfEdit('agy', 'PostToolUse', { toolCall: { args: { CommandLine: 'npm test' } } }), false);
+  assert.strictEqual(hook.isSelfEdit('claude', 'Stop', { tool_input: { file_path: '.kala/state.yaml' } }), false);
+});
+
+await test('K8/K10/K11/K12: counter, self-edit skip, reset, cooldown, Stop bypass, template < 250', () => {
+  const r = path.join(ROOT, 'k8-eval');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const stFile = path.join(r, '.kala', 'state.yaml');
+  const st0 = fs.statSync(stFile);
+  const customCfg = { enabled: true, edit_threshold: 3, max_age_minutes: 10, cooldown_minutes: 5, timeout_seconds: 5 };
+  let now = st0.mtimeMs + 1000;
+
+  // Self-edit does not increment
+  const selfRes = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: '.kala/state.yaml' } },
+    config: customCfg,
+    nowMs: now,
+  });
+  assert.strictEqual(selfRes.shouldNudge, false);
+  assert.strictEqual(selfRes.state.editsSinceCheckpoint, 0);
+
+  // 2 normal edits -> below threshold (3), no nudge
+  for (let i = 1; i <= 2; i++) {
+    now += 1000;
+    const res = hook.evaluateHook({
+      agent: 'claude',
+      event: 'PostToolUse',
+      repoDir: r,
+      payload: { tool_input: { file_path: `src/f${i}.ts` } },
+      config: customCfg,
+      nowMs: now,
+    });
+    assert.strictEqual(res.shouldNudge, false);
+    assert.strictEqual(res.state.editsSinceCheckpoint, i);
+  }
+  assert.strictEqual(fs.statSync(path.join(r, '.kala', '.hook-state.json')).mode & 0o777, 0o600);
+
+  // 3rd edit hits threshold -> nudges, sets lastNudgeAt
+  now += 1000;
+  const r3 = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/f3.ts' } },
+    config: customCfg,
+    nowMs: now,
+  });
+  assert.strictEqual(r3.shouldNudge, true);
+  assert.strictEqual(r3.state.editsSinceCheckpoint, 3);
+  assert.ok(r3.state.lastNudgeAt !== null);
+
+  const nudge = hook.buildNudgeText(r3.editsSinceCheckpoint);
+  assert.ok(nudge.length < 250, `nudge length ${nudge.length} must be < 250`);
+  assert.ok(nudge.includes('3 edits since last update'));
+
+  // 4th edit within cooldown -> suppressed mid-turn
+  now += 10_000;
+  const r4 = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/f4.ts' } },
+    config: customCfg,
+    nowMs: now,
+  });
+  assert.strictEqual(r4.shouldNudge, false);
+  assert.strictEqual(r4.state.editsSinceCheckpoint, 4);
+
+  // Stop fires immediately even inside PostToolUse cooldown!
+  const stopImmediate = hook.evaluateHook({
+    agent: 'claude',
+    event: 'Stop',
+    repoDir: r,
+    payload: { stop_hook_active: false },
+    config: customCfg,
+    nowMs: now,
+  });
+  assert.strictEqual(stopImmediate.shouldNudge, true);
+
+  // Cooldown elapsed -> mid-turn nudges again
+  now += 6 * 60_000;
+  const r5 = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/f5.ts' } },
+    config: customCfg,
+    nowMs: now,
+  });
+  assert.strictEqual(r5.shouldNudge, true);
+
+  // Reset when state.yaml size changes (even if mtime unchanged); non-self PostToolUse counts as 1 (K10-v2)
+  const sameMtime = fs.statSync(stFile).mtime;
+  fs.appendFileSync(stFile, '# checkpoint note\n');
+  fs.utimesSync(stFile, sameMtime, sameMtime);
+  const afterSize = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/f6.ts' } },
+    config: customCfg,
+    nowMs: now + 1000,
+  });
+  assert.strictEqual(afterSize.shouldNudge, false);
+  assert.strictEqual(afterSize.state.editsSinceCheckpoint, 1);
+  assert.strictEqual(afterSize.state.lastNudgeAt, null);
+
+  // Age threshold triggers PreInvocation nudge when editsSinceCheckpoint >= 1 (K11-v2)
+  const ageRes = hook.evaluateHook({
+    agent: 'agy',
+    event: 'PreInvocation',
+    repoDir: r,
+    payload: {},
+    config: customCfg,
+    nowMs: sameMtime.getTime() + 11 * 60_000,
+  });
+  assert.strictEqual(ageRes.shouldNudge, true);
+});
+
+await test('K4/K7: exact vendor output schemas & re-entry/termination guards', () => {
+  const cPost = hook.formatVendorOutput('claude', 'PostToolUse', { shouldNudge: true, editsSinceCheckpoint: 5 });
+  assert.strictEqual((cPost.hookSpecificOutput as { hookEventName: string }).hookEventName, 'PostToolUse');
+  assert.ok(typeof (cPost.hookSpecificOutput as { additionalContext: string }).additionalContext === 'string');
+
+  const cStop = hook.formatVendorOutput('claude', 'Stop', { shouldNudge: true, editsSinceCheckpoint: 2 });
+  assert.strictEqual(cStop.decision, 'block');
+  assert.ok(typeof cStop.reason === 'string');
+
+  assert.deepStrictEqual(hook.formatVendorOutput('agy', 'PostToolUse', { shouldNudge: true, editsSinceCheckpoint: 5 }), {});
+  const aPre = hook.formatVendorOutput('agy', 'PreInvocation', { shouldNudge: true, editsSinceCheckpoint: 5 });
+  assert.ok(Array.isArray(aPre.injectSteps));
+  assert.ok(typeof ((aPre.injectSteps as Array<{ systemMessage: { systemMessage: string } }>)[0].systemMessage.systemMessage) === 'string');
+
+  const aStop = hook.formatVendorOutput('agy', 'Stop', { shouldNudge: true, editsSinceCheckpoint: 1 });
+  assert.strictEqual(aStop.decision, 'continue');
+  assert.ok(typeof aStop.reason === 'string');
+
+  // Re-entry and termination guards
+  const r = path.join(ROOT, 'k4-k7-guards');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const st = fs.statSync(path.join(r, '.kala', 'state.yaml'));
+  hook.saveHookState(r, { editsSinceCheckpoint: 2, lastNudgeAt: null, lastStateMtimeMs: st.mtimeMs, lastStateSize: st.size });
+
+  assert.strictEqual(hook.evaluateHook({ agent: 'claude', event: 'Stop', repoDir: r, payload: { stop_hook_active: true } }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'claude', event: 'Stop', repoDir: r, payload: { stop_hook_active: false } }).shouldNudge, true);
+
+  assert.strictEqual(hook.evaluateHook({ agent: 'agy', event: 'PostToolUse', repoDir: r, payload: {} }).shouldNudge, false);
+  assert.strictEqual(hook.evaluateHook({ agent: 'agy', event: 'Stop', repoDir: r, payload: { continuationActive: true, terminationReason: 'NO_TOOL_CALL' } }).shouldNudge, false);
+  for (const badReason of ['USER_CANCELED', 'ERROR', 'MAX_INVOCATIONS', 'MAX_FORCED_INVOCATIONS', 'MAX_TOKEN_BUDGET_EXCEEDED']) {
+    assert.strictEqual(
+      hook.evaluateHook({ agent: 'agy', event: 'Stop', repoDir: r, payload: { continuationActive: false, terminationReason: badReason } }).shouldNudge,
+      false,
+      `agy Stop must not continue on ${badReason}`,
+    );
+  }
+  assert.strictEqual(hook.evaluateHook({ agent: 'agy', event: 'Stop', repoDir: r, payload: { continuationActive: false, terminationReason: 'NO_TOOL_CALL' } }).shouldNudge, true);
+});
+
+await test('K8: concurrent saveHookState calls remain intact without leaving temp files', async () => {
+  const r = path.join(ROOT, 'k8-race');
+  fs.mkdirSync(path.join(r, '.kala'), { recursive: true });
+  await Promise.all(
+    Array.from({ length: 12 }, (_, i) =>
+      Promise.resolve().then(() => {
+        hook.saveHookState(r, { editsSinceCheckpoint: i + 1, lastNudgeAt: null, lastStateMtimeMs: 1000, lastStateSize: 100 });
+      }),
+    ),
+  );
+  const loaded = hook.loadHookState(r);
+  assert.ok(loaded && loaded.editsSinceCheckpoint >= 1 && loaded.editsSinceCheckpoint <= 12);
+  assert.deepStrictEqual(fs.readdirSync(path.join(r, '.kala')).filter((f) => f.includes('.tmp')), []);
+});
+
+await test('K3/K5/K6/K13: non-destructive hooks install/status/uninstall, gitignore warning, malformed abort', () => {
+  const r = path.join(ROOT, 'k3-k13-repo');
+  fs.mkdirSync(path.join(r, '.claude'), { recursive: true });
+  fs.mkdirSync(path.join(r, '.agents'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r });
+  state.saveState(r, state.blankState(r, 'main'));
+
+  // Pre-seed user hooks + sibling keys + .claude/settings.json
+  const trackedSettings = path.join(r, '.claude', 'settings.json');
+  fs.writeFileSync(trackedSettings, JSON.stringify({ permissions: { allow: ['Bash(git:*)'] } }) + '\n');
+  fs.writeFileSync(
+    path.join(r, '.claude', 'settings.local.json'),
+    JSON.stringify({
+      customKey: 'keep-me',
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pre' }] }],
+        PostToolUse: [{ matcher: 'Write', hooks: [{ type: 'command', command: 'prettier --write' }] }],
+      },
+    }) + '\n',
+  );
+  fs.writeFileSync(
+    path.join(r, '.agents', 'hooks.json'),
+    JSON.stringify({ 'user-lint': { PostToolUse: [{ matcher: 'edit_file', hooks: [{ type: 'command', command: 'npm run lint' }] }] } }) + '\n',
+  );
+
+  // Install via CLI with explicit --agents claude,agy and gitignore warning
+  const inst = runKala(['hooks', 'install', '--agents', 'claude,agy'], r);
+  assert.strictEqual(inst.status, 0, inst.stderr);
+  assert.match(inst.stderr, /not gitignored/);
+
+  // .claude/settings.json untouched
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(trackedSettings, 'utf8')), { permissions: { allow: ['Bash(git:*)'] } });
+
+  // .claude/settings.local.json merged cleanly
+  const claudeLocal = JSON.parse(fs.readFileSync(path.join(r, '.claude', 'settings.local.json'), 'utf8'));
+  assert.strictEqual(claudeLocal.customKey, 'keep-me');
+  assert.strictEqual(claudeLocal.hooks.PreToolUse.length, 1);
+  assert.strictEqual(claudeLocal.hooks.PostToolUse.length, 2);
+  assert.strictEqual(claudeLocal.hooks.PostToolUse[1].matcher, 'Edit|Write|MultiEdit|Bash');
+  assert.strictEqual(claudeLocal.hooks.Stop.length, 1);
+
+  // .agents/hooks.json merged cleanly with missing-binary shell wrapper
+  const agyHooks = JSON.parse(fs.readFileSync(path.join(r, '.agents', 'hooks.json'), 'utf8'));
+  assert.ok(agyHooks['user-lint'], 'sibling hook preserved');
+  const kc = agyHooks['kalaga-checkpoint'];
+  assert.strictEqual(kc.PostToolUse[0].matcher, 'edit_file|write_file|run_command');
+  assert.ok(kc.PostToolUse[0].hooks[0].command.includes("|| printf '{}'"));
+  assert.ok(kc.PreInvocation[0].command.includes('[ -x '));
+  assert.ok(kc.Stop[0].command.includes('_hook --agent agy --event Stop'));
+
+  // Missing-binary guard returns {} and exit 0 when binary path does not exist
+  const guardCmd = kc.Stop[0].command.replaceAll(fs.realpathSync(BIN), '/nonexistent/path/to/kala');
+  const guardRes = spawnSync('/bin/sh', ['-c', guardCmd], { encoding: 'utf8' });
+  assert.strictEqual(guardRes.status, 0);
+  assert.strictEqual(guardRes.stdout.trim(), '{}');
+
+  // shellQuote handles spaces and single quotes
+  const quoted = hooks.shellQuote("/tmp/my 'kala'/bin/kala");
+  const echoRes = spawnSync('/bin/sh', ['-c', `printf '%s' ${quoted}`], { encoding: 'utf8' });
+  assert.strictEqual(echoRes.stdout, "/tmp/my 'kala'/bin/kala");
+
+  // Gitignoring .agents/hooks.json suppresses the warning
+  fs.writeFileSync(path.join(r, '.gitignore'), '.agents/hooks.json\n.claude/settings.local.json\n.kala/\n');
+  const inst2 = runKala(['hooks', 'install', '--agents', 'agy'], r);
+  assert.strictEqual(inst2.status, 0, inst2.stderr);
+  assert.doesNotMatch(inst2.stderr, /not gitignored/);
+
+  // Status shows both installed
+  const statusOut = runKala(['hooks', 'status'], r);
+  assert.strictEqual(statusOut.status, 0, statusOut.stderr);
+  assert.match(statusOut.stdout, /claude: installed/);
+  assert.match(statusOut.stdout, /agy:\s+installed/);
+  assert.match(statusOut.stdout, /checkpoint:/);
+
+  // Uninstall removes only Kalaga entries
+  const uninst = runKala(['hooks', 'uninstall'], r);
+  assert.strictEqual(uninst.status, 0, uninst.stderr);
+  const afterClaude = JSON.parse(fs.readFileSync(path.join(r, '.claude', 'settings.local.json'), 'utf8'));
+  assert.strictEqual(afterClaude.customKey, 'keep-me');
+  assert.strictEqual(afterClaude.hooks.PostToolUse.length, 1);
+  assert.strictEqual(afterClaude.hooks.PostToolUse[0].hooks[0].command, 'prettier --write');
+  assert.strictEqual(afterClaude.hooks.Stop, undefined);
+
+  const afterAgy = JSON.parse(fs.readFileSync(path.join(r, '.agents', 'hooks.json'), 'utf8'));
+  assert.ok(afterAgy['user-lint']);
+  assert.strictEqual(afterAgy['kalaga-checkpoint'], undefined);
+
+  // Malformed JSON aborts cleanly without overwriting
+  fs.writeFileSync(path.join(r, '.claude', 'settings.local.json'), '{bad json');
+  const badJson = runKala(['hooks', 'install', '--agents', 'claude'], r);
+  assert.notStrictEqual(badJson.status, 0);
+  assert.match(badJson.stderr, /cannot parse/);
+  assert.strictEqual(fs.readFileSync(path.join(r, '.claude', 'settings.local.json'), 'utf8'), '{bad json');
+
+  // Unsupported --agents exits non-zero
+  const badAgent = runKala(['hooks', 'install', '--agents', 'cursor'], r);
+  assert.notStrictEqual(badAgent.status, 0);
+  assert.match(badAgent.stderr, /unsupported hook agent/);
+});
+
+await test('K14: value flags parsed cleanly while preserving exit 2 for unknown flags', () => {
+  const r = path.join(ROOT, 'k14-flags');
+  fs.mkdirSync(r, { recursive: true });
+  assert.strictEqual(runKala(['status', '--agent', 'claude'], r).status, 2);
+  assert.strictEqual(runKala(['init', '--agents', 'claude'], r).status, 2);
+  assert.strictEqual(runKala(['hooks', 'install', '--agents'], r).status, 2);
+  assert.strictEqual(runKala(['hooks', 'install', '--bogus'], r).status, 2);
+  const ok = runKala(['hooks', '--agents=claude', 'install'], r);
+  assert.strictEqual(ok.status, 0, ok.stderr);
+});
+
+await test('K15: hooks config in KALA_HOME/config.yaml & enabled:false no-op', () => {
+  const cfgPath = path.join(KALA, 'config.yaml');
+  const hadCfg = fs.existsSync(cfgPath);
+  const backup = hadCfg ? fs.readFileSync(cfgPath, 'utf8') : null;
+  try {
+    fs.writeFileSync(cfgPath, [
+      'inject_rich_prompt: false',
+      'hooks:',
+      '  enabled: false',
+      '  edit_threshold: 2',
+      '  max_age_minutes: 4',
+      '  cooldown_minutes: 1',
+      '  timeout_seconds: 9',
+      '',
+    ].join('\n'));
+    const loaded = cfg.loadHookConfig();
+    assert.deepStrictEqual(loaded, {
+      enabled: false,
+      edit_threshold: 2,
+      max_age_minutes: 4,
+      cooldown_minutes: 1,
+      timeout_seconds: 9,
+    });
+
+    const r = path.join(ROOT, 'k15-disabled');
+    fs.mkdirSync(r, { recursive: true });
+    state.saveState(r, state.blankState(r, 'main'));
+    const res = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], r, JSON.stringify({ cwd: r }));
+    assert.strictEqual(res.status, 0);
+    assert.deepStrictEqual(JSON.parse(res.stdout.trim()), {});
+    assert.strictEqual(fs.existsSync(path.join(r, '.kala', '.hook-state.json')), false, 'enabled:false does not write hook state');
+
+    // Blank/empty numeric fields must keep defaults (never coerce "" -> 0 for cooldown_minutes)
+    fs.writeFileSync(cfgPath, [
+      'hooks:',
+      '  cooldown_minutes:',
+      '  edit_threshold: ""',
+      '',
+    ].join('\n'));
+    assert.deepStrictEqual(cfg.loadHookConfig(), cfg.DEFAULT_HOOK_CONFIG);
+  } finally {
+    if (backup !== null) fs.writeFileSync(cfgPath, backup);
+    else if (fs.existsSync(cfgPath)) fs.unlinkSync(cfgPath);
+  }
+});
+
+await test('K16: symlink refusal, 64KB cap, sanitized <=32KB error log, read-only .kala/ fail-open', () => {
+  // 1. Symlinked .hook-state.json refused; target untouched; CLI still emits {} + exit 0
+  const r = path.join(ROOT, 'k16-sym');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const victim = path.join(ROOT, 'k16-victim.json');
+  fs.writeFileSync(victim, 'UNTOUCHED');
+  fs.symlinkSync(victim, path.join(r, '.kala', '.hook-state.json'));
+  assert.throws(() => hook.loadHookState(r), /symlink/);
+  const symRes = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], r, JSON.stringify({ cwd: r }));
+  assert.strictEqual(symRes.status, 0);
+  assert.deepStrictEqual(JSON.parse(symRes.stdout.trim()), {});
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'UNTOUCHED');
+
+  // 2. Symlinked .claude/settings.local.json and .agents/hooks.json refused
+  fs.mkdirSync(path.join(r, '.claude'), { recursive: true });
+  fs.symlinkSync(victim, path.join(r, '.claude', 'settings.local.json'));
+  assert.throws(() => hooks.installHooks(r, { agents: ['claude'] }), /symlink/);
+  fs.mkdirSync(path.join(r, '.agents'), { recursive: true });
+  fs.symlinkSync(victim, path.join(r, '.agents', 'hooks.json'));
+  assert.throws(() => hooks.installHooks(r, { agents: ['agy'] }), /symlink/);
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'UNTOUCHED');
+
+  // 3. Malformed stdin with secret never leaks secret into hook-errors.log
+  const rErr = path.join(ROOT, 'k16-errlog');
+  fs.mkdirSync(rErr, { recursive: true });
+  state.saveState(rErr, state.blankState(rErr, 'main'));
+  const badRes = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], rErr, '{"token":"SECRET_TOKEN_XYZ" bad');
+  assert.strictEqual(badRes.status, 0);
+  assert.deepStrictEqual(JSON.parse(badRes.stdout.trim()), {});
+  const errLogPath = path.join(rErr, '.kala', 'hook-errors.log');
+  assert.ok(fs.existsSync(errLogPath));
+  assert.strictEqual(fs.statSync(errLogPath).mode & 0o777, 0o600);
+  assert.ok(!fs.readFileSync(errLogPath, 'utf8').includes('SECRET_TOKEN_XYZ'));
+
+  // 4. > 64 KB stdin handled cleanly
+  const bigPayload = JSON.stringify({ cwd: rErr, pad: 'A'.repeat(70 * 1024) });
+  const bigRes = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], rErr, bigPayload);
+  assert.strictEqual(bigRes.status, 0);
+  assert.deepStrictEqual(JSON.parse(bigRes.stdout.trim()), {});
+
+  // 5. hook-errors.log bounded <= 32 KB
+  for (let i = 0; i < 400; i++) {
+    hook.logHookError(rErr, new Error(`err-${i}-${'x'.repeat(120)}`));
+  }
+  assert.ok(fs.statSync(errLogPath).size <= 32 * 1024, 'hook-errors.log capped at <= 32 KB');
+
+  // 6. Read-only .kala/ fails open to {} + exit 0
+  const rRo = path.join(ROOT, 'k16-ro');
+  fs.mkdirSync(rRo, { recursive: true });
+  state.saveState(rRo, state.blankState(rRo, 'main'));
+  fs.chmodSync(path.join(rRo, '.kala'), 0o555);
+  try {
+    const roRes = runKalaInput(['_hook', '--agent', 'claude', '--event', 'PostToolUse'], rRo, JSON.stringify({ cwd: rRo }));
+    assert.strictEqual(roRes.status, 0);
+    assert.deepStrictEqual(JSON.parse(roRes.stdout.trim()), {});
+  } finally {
+    fs.chmodSync(path.join(rRo, '.kala'), 0o755);
+  }
+});
+
+section('FEAT-004 v2: regression tests (K10-v2, K11-v2, K13-v2, K16-v2, K19, K20)');
+await test('K10-v2: post-reset non-self PostToolUse counts edit (1); self/Stop/PreInvocation stays 0', () => {
+  const r = path.join(ROOT, 'k10v2-repo');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const stFile = path.join(r, '.kala', 'state.yaml');
+  const customCfg = { enabled: true, edit_threshold: 5, max_age_minutes: 10, cooldown_minutes: 5, timeout_seconds: 5 };
+  const t0 = fs.statSync(stFile).mtimeMs;
+
+  // Seed prior edits + active cooldown
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 4,
+    lastNudgeAt: new Date(t0).toISOString(),
+    lastStateMtimeMs: t0,
+    lastStateSize: fs.statSync(stFile).size,
+  });
+
+  // External state.yaml update (mtime + size increase), followed by a single non-self PostToolUse
+  fs.appendFileSync(stFile, '# updated\n');
+  const t1 = t0 + 5000;
+  fs.utimesSync(stFile, new Date(t1), new Date(t1));
+
+  const post = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/app.ts' } },
+    config: customCfg,
+    nowMs: t1 + 1000,
+  });
+  assert.strictEqual(post.shouldNudge, false);
+  assert.strictEqual(post.editsSinceCheckpoint, 1);
+  assert.strictEqual(post.state.editsSinceCheckpoint, 1);
+  assert.strictEqual(post.state.lastNudgeAt, null);
+
+  // Subsequent Stop must nudge for that 1 edit
+  const stop = hook.evaluateHook({
+    agent: 'claude',
+    event: 'Stop',
+    repoDir: r,
+    payload: { stop_hook_active: false },
+    config: customCfg,
+    nowMs: t1 + 2000,
+  });
+  assert.strictEqual(stop.shouldNudge, true);
+  assert.strictEqual(stop.editsSinceCheckpoint, 1);
+
+  // If threshold === 1, non-self PostToolUse after reset also nudges immediately (cooldown was cleared)
+  fs.appendFileSync(stFile, '# threshold 1\n');
+  const t2 = t1 + 10_000;
+  fs.utimesSync(stFile, new Date(t2), new Date(t2));
+  const thresh1 = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: 'src/one.ts' } },
+    config: { ...customCfg, edit_threshold: 1 },
+    nowMs: t2 + 500,
+  });
+  assert.strictEqual(thresh1.shouldNudge, true);
+  assert.strictEqual(thresh1.editsSinceCheckpoint, 1);
+
+  // Self-edit PostToolUse after reset stays 0
+  fs.appendFileSync(stFile, '# self\n');
+  const t3 = t2 + 10_000;
+  fs.utimesSync(stFile, new Date(t3), new Date(t3));
+  const selfPost = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: '.kala/state.yaml' } },
+    config: customCfg,
+    nowMs: t3 + 500,
+  });
+  assert.strictEqual(selfPost.shouldNudge, false);
+  assert.strictEqual(selfPost.editsSinceCheckpoint, 0);
+  assert.strictEqual(selfPost.state.lastNudgeAt, null);
+
+  // Non-PostToolUse (PreInvocation / Stop) after reset stays 0 and does not nudge
+  fs.appendFileSync(stFile, '# pre\n');
+  const t4 = t3 + 10_000;
+  fs.utimesSync(stFile, new Date(t4), new Date(t4));
+  const preReset = hook.evaluateHook({
+    agent: 'agy',
+    event: 'PreInvocation',
+    repoDir: r,
+    payload: {},
+    config: customCfg,
+    nowMs: t4 + 500,
+  });
+  assert.strictEqual(preReset.shouldNudge, false);
+  assert.strictEqual(preReset.editsSinceCheckpoint, 0);
+
+  fs.appendFileSync(stFile, '# stop\n');
+  const t5 = t4 + 10_000;
+  fs.utimesSync(stFile, new Date(t5), new Date(t5));
+  const stopReset = hook.evaluateHook({
+    agent: 'claude',
+    event: 'Stop',
+    repoDir: r,
+    payload: { stop_hook_active: false },
+    config: customCfg,
+    nowMs: t5 + 500,
+  });
+  assert.strictEqual(stopReset.shouldNudge, false);
+  assert.strictEqual(stopReset.editsSinceCheckpoint, 0);
+});
+
+await test('K11-v2: ageMet requires editsSinceCheckpoint >= 1 (zero-edit turns never nudge)', () => {
+  const r = path.join(ROOT, 'k11v2-repo');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const st = fs.statSync(path.join(r, '.kala', 'state.yaml'));
+  const customCfg = { enabled: true, edit_threshold: 5, max_age_minutes: 10, cooldown_minutes: 3, timeout_seconds: 5 };
+
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 0,
+    lastNudgeAt: null,
+    lastStateMtimeMs: st.mtimeMs,
+    lastStateSize: st.size,
+  });
+
+  // 20 minutes later, 0 edits -> must NOT nudge on agy PreInvocation or claude PostToolUse self-edit
+  const futureMs = st.mtimeMs + 20 * 60_000;
+  const agyZero = hook.evaluateHook({
+    agent: 'agy',
+    event: 'PreInvocation',
+    repoDir: r,
+    payload: {},
+    config: customCfg,
+    nowMs: futureMs,
+  });
+  assert.strictEqual(agyZero.shouldNudge, false);
+  assert.strictEqual(agyZero.editsSinceCheckpoint, 0);
+
+  const claudeSelfZero = hook.evaluateHook({
+    agent: 'claude',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { tool_input: { file_path: '.kala/state.yaml' } },
+    config: customCfg,
+    nowMs: futureMs,
+  });
+  assert.strictEqual(claudeSelfZero.shouldNudge, false);
+  assert.strictEqual(claudeSelfZero.editsSinceCheckpoint, 0);
+
+  // With 1 edit and age >= max_age_minutes -> agy PreInvocation DOES nudge
+  hook.evaluateHook({
+    agent: 'agy',
+    event: 'PostToolUse',
+    repoDir: r,
+    payload: { toolCall: { args: { TargetFile: 'src/x.ts' } } },
+    config: customCfg,
+    nowMs: futureMs,
+  });
+  const agyOne = hook.evaluateHook({
+    agent: 'agy',
+    event: 'PreInvocation',
+    repoDir: r,
+    payload: {},
+    config: customCfg,
+    nowMs: futureMs + 1000,
+  });
+  assert.strictEqual(agyOne.shouldNudge, true);
+  assert.strictEqual(agyOne.editsSinceCheckpoint, 1);
+});
+
+await test('K13-v2: default hooks install filters by isInstalled(agentFor(k)); uninstall still targets all', () => {
+  const mkBinDir = (name: string, cmds: string[]): string => {
+    const dir = path.join(ROOT, `k13v2-bin-${name}`);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const c of cmds) {
+      const p = path.join(dir, c);
+      fs.writeFileSync(p, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    }
+    return dir;
+  };
+  const binClaudeOnly = mkBinDir('claude-only', ['claude']);
+  const binAgyOnly = mkBinDir('agy-only', ['agy']);
+  const binNone = mkBinDir('none', []);
+
+  const runWithPath = (args: string[], cwd: string, pathEnv: string) =>
+    spawnSync(process.execPath, [BIN, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, HOME, KALA_HOME: KALA, PATH: pathEnv },
+    });
+
+  // 1. Only claude on PATH
+  const rClaude = path.join(ROOT, 'k13v2-repo-claude');
+  fs.mkdirSync(rClaude, { recursive: true });
+  state.saveState(rClaude, state.blankState(rClaude, 'main'));
+  const resC = runWithPath(['hooks', 'install'], rClaude, binClaudeOnly);
+  assert.strictEqual(resC.status, 0, resC.stderr);
+  assert.ok(fs.existsSync(path.join(rClaude, '.claude', 'settings.local.json')));
+  assert.strictEqual(fs.existsSync(path.join(rClaude, '.agents', 'hooks.json')), false);
+
+  // 2. Only agy on PATH
+  const rAgy = path.join(ROOT, 'k13v2-repo-agy');
+  fs.mkdirSync(rAgy, { recursive: true });
+  state.saveState(rAgy, state.blankState(rAgy, 'main'));
+  const resA = runWithPath(['hooks', 'install'], rAgy, binAgyOnly);
+  assert.strictEqual(resA.status, 0, resA.stderr);
+  assert.strictEqual(fs.existsSync(path.join(rAgy, '.claude', 'settings.local.json')), false);
+  assert.ok(fs.existsSync(path.join(rAgy, '.agents', 'hooks.json')));
+
+  // 3. Neither on PATH -> install errors clearly suggesting --agents claude,agy and writes nothing
+  const rNone = path.join(ROOT, 'k13v2-repo-none');
+  fs.mkdirSync(rNone, { recursive: true });
+  state.saveState(rNone, state.blankState(rNone, 'main'));
+  const resN = runWithPath(['hooks', 'install'], rNone, binNone);
+  assert.notStrictEqual(resN.status, 0);
+  assert.match(resN.stderr, /--agents claude,agy/);
+  assert.strictEqual(fs.existsSync(path.join(rNone, '.claude', 'settings.local.json')), false);
+  assert.strictEqual(fs.existsSync(path.join(rNone, '.agents', 'hooks.json')), false);
+
+  // Also test in-process installHooks() with clearResolvedCache()
+  const prevPath = process.env.PATH;
+  try {
+    process.env.PATH = binClaudeOnly;
+    cfg.clearResolvedCache();
+    const rInProc = path.join(ROOT, 'k13v2-inproc');
+    fs.mkdirSync(rInProc, { recursive: true });
+    const instRes = hooks.installHooks(rInProc);
+    assert.deepStrictEqual(instRes.agents, ['claude']);
+
+    process.env.PATH = binNone;
+    cfg.clearResolvedCache();
+    assert.throws(() => hooks.installHooks(rInProc), /--agents claude,agy/);
+    assert.throws(() => hooks.installHooks(rInProc, { agents: [] }), /no hook agents specified/);
+  } finally {
+    process.env.PATH = prevPath;
+    cfg.clearResolvedCache();
+  }
+
+  // Empty --agents value exits non-zero
+  assert.notStrictEqual(runWithPath(['hooks', 'install', '--agents', ''], rNone, binClaudeOnly).status, 0);
+
+  // 4. Uninstall without --agents removes BOTH even when neither CLI is on PATH
+  const rBoth = path.join(ROOT, 'k13v2-repo-both');
+  fs.mkdirSync(rBoth, { recursive: true });
+  state.saveState(rBoth, state.blankState(rBoth, 'main'));
+  const instBoth = runWithPath(['hooks', 'install', '--agents', 'claude,agy'], rBoth, binNone);
+  assert.strictEqual(instBoth.status, 0, instBoth.stderr);
+  const uninstNone = runWithPath(['hooks', 'uninstall'], rBoth, binNone);
+  assert.strictEqual(uninstNone.status, 0, uninstNone.stderr);
+  assert.match(uninstNone.stderr, /claude, agy/);
+  const stAfter = hooks.hooksStatus(rBoth);
+  assert.strictEqual(stAfter.claudeInstalled, false);
+  assert.strictEqual(stAfter.agyInstalled, false);
+});
+
+await test('K16-v2: HOOK_STDIN_DEADLINE_MS < HOOK_DEADLINE_MS; hanging stdin logs and emits {} + exit 0', async () => {
+  assert.strictEqual(hook.HOOK_STDIN_DEADLINE_MS, hook.HOOK_DEADLINE_MS - 400);
+  assert.ok(hook.HOOK_STDIN_DEADLINE_MS < hook.HOOK_DEADLINE_MS);
+
+  const r = path.join(ROOT, 'k16v2-hang');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+
+  const res = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [BIN, '_hook', '--agent', 'claude', '--event', 'PostToolUse'], {
+      cwd: r,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, HOME, KALA_HOME: KALA },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += String(d); });
+    child.stderr.on('data', (d) => { stderr += String(d); });
+    const guard = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      reject(new Error('K16-v2 hanging stdin test timed out past 4000ms'));
+    }, 4000);
+    child.on('close', (code) => {
+      clearTimeout(guard);
+      resolve({ code, stdout, stderr });
+    });
+    child.on('error', (err) => {
+      clearTimeout(guard);
+      reject(err);
+    });
+    // Intentionally leave child.stdin open without writing/ending.
+  });
+
+  assert.strictEqual(res.code, 0, res.stderr);
+  assert.deepStrictEqual(JSON.parse(res.stdout.trim()), {});
+  const errLog = fs.readFileSync(path.join(r, '.kala', 'hook-errors.log'), 'utf8');
+  assert.match(errLog, /stdin read deadline exceeded/);
+});
+
+await test('K19: bin/kala _hook fails open with {} + exit 0 when dist/hook.js is broken or missing', () => {
+  const brokenPkg = path.join(ROOT, 'k19-broken');
+  fs.mkdirSync(path.join(brokenPkg, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(brokenPkg, 'dist'), { recursive: true });
+  fs.copyFileSync(BIN, path.join(brokenPkg, 'bin', 'kala'));
+  fs.writeFileSync(path.join(brokenPkg, 'dist', 'hook.js'), 'export const broken = {{{;\n');
+
+  const brokenRes = spawnSync(
+    process.execPath,
+    [path.join(brokenPkg, 'bin', 'kala'), '_hook', '--agent', 'agy', '--event', 'PreInvocation'],
+    { cwd: ROOT, input: '{}', encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA } },
+  );
+  assert.strictEqual(brokenRes.status, 0, brokenRes.stderr);
+  assert.deepStrictEqual(JSON.parse(brokenRes.stdout.trim()), {});
+
+  const missingPkg = path.join(ROOT, 'k19-missing');
+  fs.mkdirSync(path.join(missingPkg, 'bin'), { recursive: true });
+  fs.copyFileSync(BIN, path.join(missingPkg, 'bin', 'kala'));
+  const missingRes = spawnSync(
+    process.execPath,
+    [path.join(missingPkg, 'bin', 'kala'), '_hook', '--agent', 'claude', '--event', 'Stop'],
+    { cwd: ROOT, input: '{}', encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA } },
+  );
+  assert.strictEqual(missingRes.status, 0, missingRes.stderr);
+  assert.deepStrictEqual(JSON.parse(missingRes.stdout.trim()), {});
+});
+
+await test('K20: hooksStatus and CLI status isolate malformed JSON / symlinks per agent', () => {
+  const r = path.join(ROOT, 'k20-status');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  hooks.installHooks(r, { agents: ['claude', 'agy'] });
+
+  // Corrupt .agents/hooks.json while keeping .claude/settings.local.json valid
+  fs.writeFileSync(path.join(r, '.agents', 'hooks.json'), '{bad json');
+
+  const rep = hooks.hooksStatus(r);
+  assert.strictEqual(rep.claudeInstalled, true);
+  assert.deepStrictEqual(rep.claudeEvents, ['PostToolUse', 'Stop']);
+  assert.strictEqual(rep.claudeError, null);
+  assert.strictEqual(rep.agyInstalled, false);
+  assert.ok(rep.agyError !== null && rep.agyError.length > 0);
+  assert.strictEqual(rep.stateExists, true);
+
+  const cli = runKala(['hooks', 'status'], r);
+  assert.strictEqual(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /claude: installed \(\.claude\/settings\.local\.json: PostToolUse, Stop\)/);
+  assert.match(cli.stdout, /agy:\s+error \(/);
+  assert.match(cli.stdout, /checkpoint:/);
+  assert.match(cli.stdout, /config:/);
+
+  // install and uninstall must still hard-abort on malformed JSON
+  assert.notStrictEqual(runKala(['hooks', 'install', '--agents', 'agy'], r).status, 0);
+  assert.notStrictEqual(runKala(['hooks', 'uninstall', '--agents', 'agy'], r).status, 0);
+
+  // Symlinked .claude/settings.local.json isolated while valid .agents/hooks.json reports installed
+  const rSym = path.join(ROOT, 'k20-sym');
+  fs.mkdirSync(rSym, { recursive: true });
+  state.saveState(rSym, state.blankState(rSym, 'main'));
+  hooks.installHooks(rSym, { agents: ['agy'] });
+  fs.mkdirSync(path.join(rSym, '.claude'), { recursive: true });
+  const target = path.join(ROOT, 'k20-target.json');
+  fs.writeFileSync(target, '{}');
+  fs.symlinkSync(target, path.join(rSym, '.claude', 'settings.local.json'));
+
+  const repSym = hooks.hooksStatus(rSym);
+  assert.strictEqual(repSym.claudeInstalled, false);
+  assert.ok(repSym.claudeError && repSym.claudeError.includes('symlink'));
+  assert.strictEqual(repSym.agyInstalled, true);
+  assert.strictEqual(repSym.agyError, null);
+
+  // Symlinked .agents/hooks.json isolated while valid .claude/settings.local.json reports installed
+  const rAgySym = path.join(ROOT, 'k20-agy-sym');
+  fs.mkdirSync(rAgySym, { recursive: true });
+  state.saveState(rAgySym, state.blankState(rAgySym, 'main'));
+  hooks.installHooks(rAgySym, { agents: ['claude'] });
+  fs.mkdirSync(path.join(rAgySym, '.agents'), { recursive: true });
+  fs.symlinkSync(target, path.join(rAgySym, '.agents', 'hooks.json'));
+
+  const repAgySym = hooks.hooksStatus(rAgySym);
+  assert.strictEqual(repAgySym.claudeInstalled, true);
+  assert.strictEqual(repAgySym.claudeError, null);
+  assert.strictEqual(repAgySym.agyInstalled, false);
+  assert.ok(repAgySym.agyError && repAgySym.agyError.includes('symlink'));
+});
+await test('trap/inject: prior limit notes excluded from Avoid and echoed Kalaga lines ignored by scanChunk', () => {
+  const s = state.blankState('/tmp/x', null);
+  s.owner = 'claude';
+  s.goal = 'build app';
+  s.next_step = 'next step';
+  s.negative_constraints = [
+    'Do not add npm dependencies',
+    'claude limit hit: You have reached your 5-hour session limit. Usage limit reached — resets in 3 hours.',
+  ];
+  const inj = handoffInject(s, false, 'claude');
+  assert.ok(inj.includes('Avoid: Do not add npm dependencies'));
+  assert.ok(!inj.includes('claude limit hit:'), 'prior limit note must not echo into prompt');
+  assert.ok(!inj.includes('Usage limit reached'), 'raw vendor limit phrase must not echo into prompt');
+
+  const echoed = [
+    'Kalaga handoff from cursor. Read .kala/state.yaml in the project root before doing anything.',
+    'Avoid: Do not add deps | claude limit hit: You have reached your 5-hour session limit. Usage limit reached',
+    'claude limit hit: Usage limit reached',
+    'Implemented server.js cleanly.',
+  ].join('\n');
+  assert.strictEqual(scanChunk(echoed, cfg.AGENTS.grok, 0), null);
+
+  const realHit = `${echoed}\nYou have reached your 5-hour session limit. Usage limit reached.`;
+  const parsed = scanChunk(realHit, cfg.AGENTS.grok, 0);
+  assert.ok(parsed);
+  assert.ok(parsed!.line.includes('Usage limit reached'));
+});
+await test('sqlitewarn suppresses only ExperimentalWarning mentioning SQLite', async () => {
+  const { ignoreSqliteExperimentalWarning } = await import(`${SRC}/util/sqlitewarn.ts`);
+  const seen: string[] = [];
+  const origEmit = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const msg = typeof warning === 'string' ? warning : warning.message;
+    const kind = typeof args[0] === 'string' ? args[0] : (warning instanceof Error ? warning.name : '');
+    seen.push(`${kind}:${msg}`);
+  }) as typeof process.emitWarning;
+  try {
+    ignoreSqliteExperimentalWarning();
+    process.emitWarning('SQLite is an experimental feature', 'ExperimentalWarning');
+    process.emitWarning('SQLite legacy mode deprecated', 'DeprecationWarning');
+    process.emitWarning('Other experimental feature', 'ExperimentalWarning');
+    assert.deepStrictEqual(seen, [
+      'DeprecationWarning:SQLite legacy mode deprecated',
+      'ExperimentalWarning:Other experimental feature',
+    ]);
+  } finally {
+    process.emitWarning = origEmit;
+  }
+});
+await test('ttyask: non-TTY line/EOF and raw-mode \\r\\n + close handling', async () => {
+  const { readSingleKeyOrLine } = await import(`${SRC}/util/ttyask.ts`);
+  const { PassThrough } = await import('node:stream');
+  const origStdin = Object.getOwnPropertyDescriptor(process, 'stdin')!;
+  const origStderrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((_c: string | Uint8Array, enc?: BufferEncoding | ((e?: Error | null) => void), cb?: (e?: Error | null) => void) => {
+    if (typeof enc === 'function') enc(null);
+    else if (typeof cb === 'function') cb(null);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const pipe = new PassThrough();
+    Object.defineProperty(process, 'stdin', { value: pipe, configurable: true });
+    const pPipe = readSingleKeyOrLine();
+    pipe.end('y\n');
+    assert.strictEqual(await pPipe, 'y');
+
+    const eofPipe = new PassThrough();
+    Object.defineProperty(process, 'stdin', { value: eofPipe, configurable: true });
+    const pEof = readSingleKeyOrLine();
+    eofPipe.end();
+    assert.strictEqual(await pEof, '');
+
+    // Raw-mode TTY simulation for CRLF and abrupt close
+    const rawCrlf = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode(v: boolean) { (this as { isRaw: boolean }).isRaw = v; },
+    });
+    Object.defineProperty(process, 'stdin', { value: rawCrlf, configurable: true });
+    const pCrlf = readSingleKeyOrLine();
+    rawCrlf.write('\r\n');
+    assert.strictEqual(await pCrlf, '');
+    assert.strictEqual(rawCrlf.isRaw, false);
+
+    const rawClose = Object.assign(new PassThrough(), {
+      isTTY: true,
+      isRaw: false,
+      setRawMode(v: boolean) { (this as { isRaw: boolean }).isRaw = v; },
+    });
+    Object.defineProperty(process, 'stdin', { value: rawClose, configurable: true });
+    const pRawClose = readSingleKeyOrLine();
+    rawClose.destroy();
+    assert.strictEqual(await pRawClose, '');
+    assert.strictEqual(rawClose.isRaw, false);
+  } finally {
+    Object.defineProperty(process, 'stdin', { ...origStdin, configurable: true });
+    process.stderr.write = origStderrWrite;
+  }
+});
+await test('trust: Windows backslash paths round-trip through trust.yaml', () => {
+  const trustFile = path.join(KALA, 'trust.yaml');
+  const backup = fs.existsSync(trustFile) ? fs.readFileSync(trustFile, 'utf8') : null;
+  try {
+    const winPath = 'C:\\Users\\vinay\\repo\\proj';
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    fs.writeFileSync(
+      trustFile,
+      `grants:\n  - path: ${JSON.stringify(winPath)}\n    granted_at: "2026-11-26T00:00:00.000Z"\n    expires_at: ${JSON.stringify(future)}\n`,
+      { mode: 0o600 },
+    );
+    const list = trust.trustStatus();
+    assert.strictEqual(list[0].path, winPath);
+  } finally {
+    if (backup === null) fs.rmSync(trustFile, { force: true });
+    else fs.writeFileSync(trustFile, backup, { mode: 0o600 });
+  }
+});
+await test('liveask: ignores YAML null/~ and merges done + negative_constraints without clobbering', async () => {
+  const nullParsed = liveask.parseLiveAskYaml('goal: null\ndone: null\nnegative_constraints: ~\nnext_step: keep going\nnotes: "null"\n');
+  assert.strictEqual(nullParsed.goal, undefined);
+  assert.strictEqual(nullParsed.done, undefined);
+  assert.strictEqual(nullParsed.negative_constraints, undefined);
+  assert.strictEqual(nullParsed.next_step, 'keep going');
+
+  const r = path.join(ROOT, 'liveask-merge');
+  fs.mkdirSync(r);
+  const init = state.blankState(r, 'main');
+  init.goal = 'ship feature';
+  init.done = ['landed step 1'];
+  init.negative_constraints = ['do not break auth'];
+  state.saveState(r, init);
+
+  const stub = path.join(ROOT, 'liveask-stub.sh');
+  fs.writeFileSync(stub, '#!/bin/sh\necho "done:"\necho "  - landed step 1"\necho "  - landed step 2"\necho "negative_constraints: [do not break auth, no shell true]"\necho "next_step: run tests"\n');
+  fs.chmodSync(stub, 0o755);
+  const fakeAgent = { ...cfg.AGENTS.claude, interactive: [stub], headless: [], trustFlags: [], resumeByIdPrefix: ['-r'] };
+  await liveask.liveAskAndMerge(fakeAgent, r, 5000);
+  const after = state.loadState(r)!;
+  assert.deepStrictEqual(after.done, ['landed step 1', 'landed step 2']);
+  assert.deepStrictEqual(after.negative_constraints, ['do not break auth', 'no shell true']);
+  assert.strictEqual(after.next_step, 'run tests');
+});
+await test('index: missing binary exits 1 without mutating owner; agy non-zero treated as suspect', () => {
+  const r = path.join(ROOT, 'missing-bin-repo');
+  fs.mkdirSync(r);
+  const s = state.blankState(r, 'main');
+  s.owner = 'agy';
+  s.goal = 'ship something real';
+  s.done = ['already did one thing'];
+  s.next_step = 'finish thing';
+  state.saveState(r, s);
+
+  const res = spawnSync(process.execPath, [BIN, 'run', 'cursor'], {
+    cwd: r,
+    encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA, PATH: path.dirname(process.execPath) },
+  });
+  assert.strictEqual(res.status, 1, res.stderr);
+  assert.match(res.stderr, /binary not found/);
+  assert.doesNotMatch(res.stderr, /assume it hit its limit/);
+  assert.strictEqual(state.loadState(r)?.owner, 'agy');
+
+  // Verify agy non-zero metadata-only exit classification logic matches suspect tier
+  assert.strictEqual(classifyExit({ hit: null, exitCode: 1, hasTail: false }), 'suspect');
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

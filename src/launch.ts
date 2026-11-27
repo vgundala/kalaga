@@ -110,6 +110,8 @@ export async function sessionFresh(agent: AgentConfig, repoDir: string, rec: { i
   // grok (sqlite best-effort): time check + optional row
   try {
     if (agent.key === 'grok') {
+      const { ignoreSqliteExperimentalWarning } = await import('./util/sqlitewarn.ts');
+      ignoreSqliteExperimentalWarning();
       const { DatabaseSync } = await import('node:sqlite');
       const db = new DatabaseSync(path.join(os.homedir(), '.grok', 'sessions', 'session_search.sqlite'), { readOnly: true });
       const row = db.prepare('select 1 from session_docs where session_id = ? limit 1').get(rec.id);
@@ -207,6 +209,8 @@ export async function lastSessionText(agent: AgentConfig, repoDir: string): Prom
     }
     case 'grok': {
       try {
+        const { ignoreSqliteExperimentalWarning } = await import('./util/sqlitewarn.ts');
+        ignoreSqliteExperimentalWarning();
         const { DatabaseSync } = await import('node:sqlite');
         const db = new DatabaseSync(path.join(os.homedir(), '.grok', 'sessions', 'session_search.sqlite'), { readOnly: true });
         const row = db.prepare('select content from session_docs where cwd = ? order by updated_at desc limit 1').get(repoDir);

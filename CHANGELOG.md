@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Continuous checkpointing (FEAT-004 v2, CERT-008)
+
+- New `kala hooks install [--agents claude,agy]`, `kala hooks status`, and `kala hooks uninstall` commands for opt-in, non-destructive project hook wiring (`install` defaults to installed supported CLIs found on `PATH` and errors clearly if none are present, writing `.claude/settings.local.json` and/or `"kalaga-checkpoint"` in `.agents/hooks.json`, with a `.gitignore` check for `.agents/hooks.json` and a missing-binary shell guard for `agy`; `status` isolates per-agent config errors).
+- New fast-path internal runner (`kala _hook --agent <key> --event <name>`, hidden from `--help`, with fail-open `try/catch` in `bin/kala`) tracking edits and checkpoint staleness in `.kala/.hook-state.json` (atomic `0600`, self-edit skip, mtime/size reset with non-self `PostToolUse` fall-through count, mid-turn cooldown + `editsSinceCheckpoint >= 1` guard on `max_age_minutes`, `Stop` re-entry/termination guards).
+- Optional `hooks:` block in `~/.kala/config.yaml` (`$KALA_HOME` override) for `enabled`, `edit_threshold`, `max_age_minutes`, `cooldown_minutes`, and `timeout_seconds`.
+- Symlink refusal across `.hook-state.json`, `hook-errors.log`, and vendor hook configs; 64 KB stdin cap, staggered 1600ms stdin deadline inside the 2000ms hook deadline, sanitized bounded `<=32 KB` `.kala/hook-errors.log`, and fail-open `{}` + exit `0`.
+
+### UX & Handoff hardening
+
+- Picker is one keypress on a TTY (no Enter). Hint text says so; interactive confirmations (`confirmAssumeLimit`, `doRecover`) use `readSingleKeyOrLine()`.
+- Non-TTY and piped input handling fixes in `ttyask.ts` (`terminal: false`, `done(ans)` before `rl.close()`, raw `\r`/`\n` and `end`/`close`/`error` handling without double-consuming stdin).
+- After a pick, stderr shows `→ <agent> — preparing…` then refresh/launch progress so the screen is never silent.
+- Claude folder-trust note appears on stderr on Claude launch rather than in the shortlist picker.
+- Path-trust prompt is clearly separate from the picker; skipped grant prints a line, and YAML trust records use `parseYamlScalar` (preserving Windows backslashes).
+- `node:sqlite` ExperimentalWarning is suppressed selectively without blanket `--no-warnings` or silencing unrelated `ExperimentalWarning`s.
+- Prevented self-poisoning limit-hit cascades by filtering `<agent> limit hit:` from injected `Avoid:` lines (`src/prompt.ts`) and skipping echoed/prior Kalaga limit notes in `scanChunk()` (`src/trap.ts`).
+- `liveAskAndMerge()` ignores YAML `null`/`~` values and merges/deduplicates `done` and `negative_constraints` lists; `afterExit()` skips false limit prompts on `exitCode === 127` and classifies non-zero `!hit` `agy` exits as `suspect`; `doRun`/`doSwitch` (after `--strict-state`)/`doResume` verify target CLI binary availability before mutating state.
+
 ## 0.7.0 — 2026-11-25
 
 Soft-launch release: packaging for npm installs, handoff protocol hardening from the GTM audit, Antigravity session discovery, and documented vendor seams.
@@ -25,7 +45,7 @@ Soft-launch release: packaging for npm installs, handoff protocol hardening from
 ### UX / security
 
 - `-v` / `--version`, `--force`, and `--strict-state` work in any argument position. `kala state goal` with no text prints the field. Picker answers `n`, `no`, `exit`, and out-of-range numbers stay.
-- Claude folder trust is noted in the picker and on launch (Down then Enter on a new folder).
+- Claude folder trust is noted on Claude launch (Down then Enter on a new folder).
 - `kala status` strips terminal escapes. State and trust files refuse symlinks and are replaced atomically (`0600`).
 
 ### Docs / QA

@@ -84,12 +84,15 @@ export function handoffInject(s: HandoffState, rich = false, fromOwner?: string 
   } else {
     base = 'Kalaga session context. Read .kala/state.yaml in the project root before doing anything.';
   }
+  const avoidConstraints = st.negative_constraints.filter(
+    (c) => !/^(?:agy|cursor|grok|claude)\s+limit\s+hit:/i.test(c.trim()),
+  );
   const lines = [
     base,
     `Goal: ${st.goal}`,
     st.done.length ? st.done.map((d) => `Done: ${d}`).join('\n') : '',
     `Next step: ${st.next_step}`,
-    st.negative_constraints.length ? `Avoid: ${st.negative_constraints.join(' | ')}` : '',
+    avoidConstraints.length ? `Avoid: ${avoidConstraints.join(' | ')}` : '',
     rich && st.modified_files.length ? `Modified files: ${st.modified_files.join(', ')}` : '',
     rich && st.notes ? `Context: ${st.notes}` : '',
     STANDING_ORDERS,

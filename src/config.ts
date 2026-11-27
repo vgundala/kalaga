@@ -129,6 +129,82 @@ export function configPath(): string {
   return path.join(kalagaHome(), 'config.yaml');
 }
 
+export interface HookConfig {
+  enabled: boolean;
+  edit_threshold: number;
+  max_age_minutes: number;
+  cooldown_minutes: number;
+  timeout_seconds: number;
+}
+
+export const DEFAULT_HOOK_CONFIG: HookConfig = {
+  enabled: true,
+  edit_threshold: 5,
+  max_age_minutes: 10,
+  cooldown_minutes: 3,
+  timeout_seconds: 5,
+};
+
+function stripInlineComment(raw: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (quote) {
+      if (c === quote && raw[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '#' && (i === 0 || /\s/.test(raw[i - 1]))) return raw.slice(0, i).trim();
+  }
+  return raw.trim();
+}
+
+function unquoteScalar(raw: string): string {
+  const s = stripInlineComment(raw);
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/** FEAT-004 K15: read optional `hooks:` block from `~/.kala/config.yaml` (or `$KALA_HOME`).
+ *  Refuses symlinks; falls back cleanly to DEFAULT_HOOK_CONFIG on missing or invalid fields. */
+export function loadHookConfig(): HookConfig {
+  const out: HookConfig = { ...DEFAULT_HOOK_CONFIG };
+  const home = kalagaHome();
+  const cfgFile = path.join(home, 'config.yaml');
+  try {
+    if (fs.lstatSync(home).isSymbolicLink()) return out;
+    const st = fs.lstatSync(cfgFile);
+    if (st.isSymbolicLink() || !st.isFile()) return out;
+    const raw = fs.readFileSync(cfgFile, 'utf8');
+    let inHooks = false;
+    for (const line of raw.split(/\r?\n/)) {
+      if (/^\s*#/.test(line) || !line.trim()) continue;
+      if (/^hooks:\s*(?:#.*)?$/.test(line)) { inHooks = true; continue; }
+      if (/^\S/.test(line)) { inHooks = false; continue; }
+      if (!inHooks) continue;
+      const m = line.match(/^\s+([a-z_]+):\s*(.*)$/);
+      if (!m) continue;
+      const key = m[1];
+      const val = unquoteScalar(m[2]);
+      if (key === 'enabled') {
+        if (val === 'true') out.enabled = true;
+        else if (val === 'false') out.enabled = false;
+        continue;
+      }
+      if (!val) continue;
+      const n = Number(val);
+      if (!Number.isFinite(n)) continue;
+      if (key === 'edit_threshold' && n >= 1) out.edit_threshold = Math.floor(n);
+      else if (key === 'max_age_minutes' && n > 0) out.max_age_minutes = n;
+      else if (key === 'cooldown_minutes' && n >= 0) out.cooldown_minutes = n;
+      else if (key === 'timeout_seconds' && n >= 1) out.timeout_seconds = Math.floor(n);
+    }
+  } catch { /* missing or unreadable config → defaults */ }
+  return out;
+}
+
 /**
  * Built-in agent roster as shallow copies (SEC-001 M1). Token ceilings are
  * fixed builtins for headroom estimates — `~/.kala/config.yaml` does not

@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import { resolveExecutable, resolveSpawnTarget } from './config.ts';
 import type { AgentConfig } from './config.ts';
-import { mergeState } from './state/state.ts';
+import { loadState, mergeState } from './state/state.ts';
 import { sanitizeHandoffField, FIELD_MAX, sanitizeHandoffList } from './prompt.ts';
 import { resumeArgv } from './launch.ts';
 import { consumeIndentedBlock, isYamlBlockIndicator, parseYamlInlineList, parseYamlScalar, renderYamlBlock } from './util/yaml.ts';
@@ -27,6 +27,19 @@ export const LIVE_ASK_PROMPT = [
   'negative_constraints (list). Summarize what was accomplished and the single',
   'next action. Do not invent files you did not touch.',
 ].join(' ');
+
+function isYamlNull(raw: string): boolean {
+  const t = raw.trim().toLowerCase();
+  return t === 'null' || t === '~';
+}
+
+function mergeListUnique(existing: string[], incoming: string[], cap: number): string[] {
+  const out = [...existing];
+  for (const item of incoming) {
+    if (item && !out.includes(item)) out.push(item);
+  }
+  return out.slice(-cap);
+}
 
 export interface LiveAskPatch {
   goal?: string;
@@ -129,21 +142,26 @@ export function parseLiveAskYaml(raw: string): LiveAskPatch {
       continue;
     }
     if (LIST_KEYS.has(key)) {
+      if (isYamlNull(rest)) {
+        curKey = null;
+        continue;
+      }
       const inline = parseYamlInlineList(rest);
       if (inline) {
-        const items = inline.map((s) => s.trim()).filter((s) => s.length > 0 && s !== '[]');
+        const items = inline.map((s) => s.trim()).filter((s) => s.length > 0 && s !== '[]' && !isYamlNull(s));
         if (items.length) patch[key as 'done' | 'negative_constraints'] = items;
         curKey = null;
         continue;
       }
       curKey = key as 'done' | 'negative_constraints';
       const v = parseYamlScalar(rest).trim();
-      if (v && v !== '[]') patch[curKey] = [v];
+      if (v && v !== '[]' && !isYamlNull(v)) patch[curKey] = [v];
       continue;
     }
     curKey = null;
+    if (isYamlNull(rest)) continue;
     const v = parseYamlScalar(rest).trim();
-    if (v) patch[key] = v;
+    if (v && !isYamlNull(v)) patch[key] = v;
   }
   return patch;
 }
@@ -169,7 +187,17 @@ export async function liveAskAndMerge(
     console.error(`  kalaga: live-ask (${agent.key}) returned nothing usable — using existing state`);
     return;
   }
-  if (patch.done?.length) patch.done = patch.done.slice(-FIELD_MAX.doneItems);
+  const cur = loadState(repoDir);
+  if (patch.done?.length) {
+    patch.done = mergeListUnique(cur?.done ?? [], patch.done, FIELD_MAX.doneItems);
+  }
+  if (patch.negative_constraints?.length) {
+    patch.negative_constraints = mergeListUnique(
+      cur?.negative_constraints ?? [],
+      patch.negative_constraints,
+      FIELD_MAX.negItems,
+    );
+  }
   mergeState(repoDir, patch, 'live-ask');
   console.error(`  kalaga: live-ask (${agent.key}) merged`);
 }

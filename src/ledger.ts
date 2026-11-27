@@ -85,6 +85,8 @@ function claudeUsage(repoDir: string): { tokens: number; lastUsed: number | null
 export async function grokSessionHint(repoDir: string): Promise<{ sid: string | null; lastUsed: number | null }> {
   const dbPath = path.join(os.homedir(), '.grok', 'sessions', 'session_search.sqlite');
   try {
+    const { ignoreSqliteExperimentalWarning } = await import('./util/sqlitewarn.ts');
+    ignoreSqliteExperimentalWarning();
     const { DatabaseSync } = await import('node:sqlite');
     const db = new DatabaseSync(dbPath, { readOnly: true });
     const row = db.prepare(
