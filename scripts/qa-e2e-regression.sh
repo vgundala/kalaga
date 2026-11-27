@@ -88,10 +88,10 @@ pick_agents() {
   # PTY automation note: agy defaults trust chooser to Yes; Claude defaults to No
   # (arrow keys often ignored under raw PTY). Full mode tries each for F-01.
   AGENTS_AVAIL=()
-  command -v claude >/dev/null && AGENTS_AVAIL+=(claude)
-  command -v cursor-agent >/dev/null && AGENTS_AVAIL+=(cursor)
-  command -v agy >/dev/null && AGENTS_AVAIL+=(agy)
-  command -v grok >/dev/null && AGENTS_AVAIL+=(grok)
+  command -v claude >/dev/null && AGENTS_AVAIL+=(claude) || true
+  command -v cursor-agent >/dev/null && AGENTS_AVAIL+=(cursor) || true
+  command -v agy >/dev/null && AGENTS_AVAIL+=(agy) || true
+  command -v grok >/dev/null && AGENTS_AVAIL+=(grok) || true
 }
 
 seed_rich_state() {
@@ -298,16 +298,80 @@ fi
 # Restore rich seed for interactive chain
 seed_rich_state >/dev/null 2>&1
 
+# ---------- H-01..H-03 FEAT-004 hook install & _hook pipe tests ----------
+HOOK_CLAUDE_REPO="$RUN_ROOT/hook-claude"
+mkdir -p "$HOOK_CLAUDE_REPO"
+git -C "$HOOK_CLAUDE_REPO" init -q
+(cd "$HOOK_CLAUDE_REPO" && kala init >/dev/null 2>&1)
+
+if (cd "$HOOK_CLAUDE_REPO" && kala hooks install --agents claude,agy >"$LOG_DIR/h01-install.out" 2>"$LOG_DIR/h01-install.err") \
+  && (cd "$HOOK_CLAUDE_REPO" && kala hooks status >"$LOG_DIR/h01-status.out") \
+  && grep -q "claude: installed" "$LOG_DIR/h01-status.out" \
+  && grep -q "agy:    installed" "$LOG_DIR/h01-status.out" \
+  && (cd "$HOOK_CLAUDE_REPO" && kala hooks uninstall >/dev/null 2>&1); then
+  record "H-01" "Pass" "hooks install/status/uninstall ok"
+else
+  record "H-01" "Fail" "hooks install/status/uninstall failed"
+fi
+
+h02_ok=1
+for i in 1 2 3 4; do
+  out="$(printf '{"cwd":"%s","tool_input":{"file_path":"src/f%d.ts"}}' "$HOOK_CLAUDE_REPO" "$i" | kala _hook --agent claude --event PostToolUse)" || h02_ok=0
+  [[ "$out" == "{}" ]] || h02_ok=0
+done
+c_post5="$(printf '{"cwd":"%s","tool_input":{"file_path":"src/f5.ts"}}' "$HOOK_CLAUDE_REPO" | kala _hook --agent claude --event PostToolUse)" || h02_ok=0
+c_stop_go="$(printf '{"cwd":"%s","stop_hook_active":false}' "$HOOK_CLAUDE_REPO" | kala _hook --agent claude --event Stop)" || h02_ok=0
+c_stop_guard="$(printf '{"cwd":"%s","stop_hook_active":true}' "$HOOK_CLAUDE_REPO" | kala _hook --agent claude --event Stop)" || h02_ok=0
+node -e '
+  const p5 = JSON.parse(process.argv[1]);
+  const sg = JSON.parse(process.argv[2]);
+  const su = JSON.parse(process.argv[3]);
+  if (p5?.hookSpecificOutput?.hookEventName !== "PostToolUse" || !p5?.hookSpecificOutput?.additionalContext?.includes("[kalaga]")) process.exit(1);
+  if (sg?.decision !== "block" || !sg?.reason?.includes("[kalaga]")) process.exit(1);
+  if (Object.keys(su).length !== 0) process.exit(1);
+' "$c_post5" "$c_stop_go" "$c_stop_guard" 2>"$LOG_DIR/h02.err" || h02_ok=0
+if [[ $h02_ok -eq 1 ]]; then
+  record "H-02" "Pass" "claude _hook PostToolUse + Stop + stop_hook_active guard ok"
+else
+  record "H-02" "Fail" "claude _hook pipe assertion failed (post5=$c_post5 stop=$c_stop_go guard=$c_stop_guard)"
+fi
+
+HOOK_AGY_REPO="$RUN_ROOT/hook-agy"
+mkdir -p "$HOOK_AGY_REPO"
+git -C "$HOOK_AGY_REPO" init -q
+(cd "$HOOK_AGY_REPO" && kala init >/dev/null 2>&1)
+h03_ok=1
+for i in 1 2 3 4 5; do
+  out="$(printf '{"workspacePaths":["%s"],"toolCall":{"name":"edit_file","args":{"TargetFile":"src/a%d.ts"}}}' "$HOOK_AGY_REPO" "$i" | kala _hook --agent agy --event PostToolUse)" || h03_ok=0
+  [[ "$out" == "{}" ]] || h03_ok=0
+done
+a_pre="$(printf '{"workspacePaths":["%s"]}' "$HOOK_AGY_REPO" | kala _hook --agent agy --event PreInvocation)" || h03_ok=0
+a_stop_go="$(printf '{"workspacePaths":["%s"],"continuationActive":false,"terminationReason":"NO_TOOL_CALL"}' "$HOOK_AGY_REPO" | kala _hook --agent agy --event Stop)" || h03_ok=0
+a_stop_act="$(printf '{"workspacePaths":["%s"],"continuationActive":true,"terminationReason":"NO_TOOL_CALL"}' "$HOOK_AGY_REPO" | kala _hook --agent agy --event Stop)" || h03_ok=0
+a_stop_can="$(printf '{"workspacePaths":["%s"],"continuationActive":false,"terminationReason":"USER_CANCELED"}' "$HOOK_AGY_REPO" | kala _hook --agent agy --event Stop)" || h03_ok=0
+node -e '
+  const pre = JSON.parse(process.argv[1]);
+  const sg = JSON.parse(process.argv[2]);
+  const sa = JSON.parse(process.argv[3]);
+  const sc = JSON.parse(process.argv[4]);
+  if (!pre?.injectSteps?.[0]?.systemMessage?.systemMessage?.includes("[kalaga]")) process.exit(1);
+  if (sg?.decision !== "continue" || !sg?.reason?.includes("[kalaga]")) process.exit(1);
+  if (Object.keys(sa).length !== 0 || Object.keys(sc).length !== 0) process.exit(1);
+' "$a_pre" "$a_stop_go" "$a_stop_act" "$a_stop_can" 2>"$LOG_DIR/h03.err" || h03_ok=0
+if [[ $h03_ok -eq 1 ]]; then
+  record "H-03" "Pass" "agy _hook PostToolUse + PreInvocation + Stop + guards ok"
+else
+  record "H-03" "Fail" "agy _hook pipe assertion failed (pre=$a_pre stop=$a_stop_go)"
+fi
+
 # ---------- Interactive / PTY F-chain ----------
 run_pty() {
   local id="$1"; shift
   local log="$LOG_DIR/${id}.pty.log"
   local timeout="${PTY_TIMEOUT:-120}"
-  set +e
-  python3 "$PTY_DRIVE" --kala "$KALA_BIN" --cwd "$TEST_REPO" --timeout "$timeout" --log "$log" -- "$@"
-  local ec=$?
-  set -e
-  return $ec
+  local ec=0
+  python3 "$PTY_DRIVE" --kala "$KALA_BIN" --cwd "$TEST_REPO" --timeout "$timeout" --log "$log" -- "$@" || ec=$?
+  return "$ec"
 }
 
 # Pass if PTY exited 0, or timed out but Kalaga-side owner matches (sticky vendor TUI).
@@ -387,7 +451,7 @@ else
     fi
     # Trust: cold prompt in transcript + grant list after y
     trust_out="$(kala trust 2>&1 || true)"
-    if grep -qi "trust this directory for kalaga" "$LOG_DIR/F-03.pty.log" 2>/dev/null; then
+    if grep -qiE "kalaga path trust|trust this directory for kalaga" "$LOG_DIR/F-03.pty.log" 2>/dev/null; then
       record "F-30" "Pass" "Kalaga cold trust prompt observed"
     elif [[ "$f03_ec" -eq 0 ]] || pty_owner_ok cursor; then
       record "F-30" "Pass" "cursor launched via Kalaga (prompt may have been brief)"

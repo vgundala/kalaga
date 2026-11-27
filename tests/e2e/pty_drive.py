@@ -39,13 +39,18 @@ def set_winsize(fd: int, rows: int = 40, cols: int = 120) -> None:
         pass
 
 
-def reply_term_queries(fd: int, raw: bytes) -> None:
+def reply_term_queries(fd: int, raw: bytes) -> bool:
+    replied = False
     if b"\x1b[c" in raw or b"\x1b[0c" in raw:
         os.write(fd, b"\x1b[?1;2c")
+        replied = True
     if b"\x1b[>0q" in raw:
         os.write(fd, b"\x1bP>|pty_drive\x1b\\")
+        replied = True
     if b"\x1b[?u" in raw:
         os.write(fd, b"\x1b[?0u")
+        replied = True
+    return replied
 
 
 def main() -> int:
@@ -72,6 +77,11 @@ def main() -> int:
         type=float,
         default=0.0,
         help="After wait-paths exist, wait until PTY output is quiet for N secs so the turn finishes",
+    )
+    ap.add_argument(
+        "--pick-agent",
+        default="",
+        help="Agent key to select from Kalaga's continue/start picker (e.g. cursor)",
     )
     ap.add_argument("kala_args", nargs=argparse.REMAINDER)
     args = ap.parse_args()
@@ -103,6 +113,8 @@ def main() -> int:
     last_rx = time.time()
     paths_logged = False
     queries_done = False
+    pick_done = False
+    kala_trust_done = False
     child_code: int | None = None
     trust_clicks = 0
 
@@ -148,7 +160,8 @@ def main() -> int:
                 out.extend(chunk)
                 last_rx = time.time()
                 if not queries_done and len(out) > 200:
-                    reply_term_queries(fd, bytes(out))
+                    if reply_term_queries(fd, bytes(out)):
+                        last_action = time.time()
                     queries_done = True
 
             now = time.time()
@@ -161,22 +174,39 @@ def main() -> int:
 
             tail = recent_plain()
 
+            # --- Kalaga startup / recover picker ---
+            if args.pick_agent and not pick_done and phase == "boot" and (
+                "continue on" in tail or "start with" in tail
+            ):
+                m = re.search(rf"\[(\d+)\]\s+{re.escape(args.pick_agent.lower())}\b", tail)
+                if m:
+                    pick_done = True
+                    act(f"kala-pick-{args.pick_agent}", m.group(1).encode())
+                    continue
+
             # --- Kalaga trust (cursor) ---
-            if phase in ("boot", "trust") and "trust this directory for kalaga" in tail:
+            if not kala_trust_done and phase in ("boot", "trust") and (
+                "kalaga path trust" in tail or "trust this directory for kalaga" in tail
+            ):
+                kala_trust_done = True
                 phase = "trust"
-                act("kala-trust-y", b"y\r")
+                act("kala-trust-y", b"y")
                 continue
 
             # --- Vendor workspace trust (match RECENT screen only) ---
             if phase in ("boot", "trust") and (
-                "trust this folder" in tail or "trust the contents of this project" in tail
+                "trust this folder" in tail
+                or "trust the contents of this project" in tail
+                or "quick safety check" in tail
+                or "is this a project you created" in tail
             ):
                 phase = "trust"
                 on_no = bool(re.search(r"[❯>]\s*no", tail))
                 if on_no and trust_clicks < 5:
                     trust_clicks += 1
+                    time.sleep(0.5)
                     act("vendor-trust-down", b"\x1b[B")
-                    time.sleep(0.4)
+                    time.sleep(0.6)
                     act("vendor-trust-enter", b"\r")
                 elif trust_clicks < 5:
                     trust_clicks += 1
@@ -186,7 +216,13 @@ def main() -> int:
                 continue
 
             # Advance out of trust once the chooser leaves the recent screen
-            if phase == "trust" and "trust this folder" not in tail and "trust the contents" not in tail:
+            if (
+                phase == "trust"
+                and "trust this folder" not in tail
+                and "trust the contents" not in tail
+                and "quick safety check" not in tail
+                and "is this a project you created" not in tail
+            ):
                 phase = "ready"
                 print("pty_drive: trust screen cleared → ready", flush=True)
 

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Kalaga real-world multi-CLI stress test: builds "ledgerlite" (a 4-layer
 # SQLite double-entry bookkeeping, invoicing, CSV export, CLI & HTTP JSON API
-# package) across 3 distinct vendor CLIs and back to the first:
+# package) across ALL 4 vendor CLIs, exercising FEAT-004 continuous checkpointing
+# hooks and a simulated Claude limit expiration + `kala recover`:
 #
-#   Phase 1: kala run agy       (Milestone 1: SQLite schema + double-entry engine)
-#   Phase 2: kala switch cursor (Milestone 2: Invoice lifecycle + aging + CSV)
-#   Phase 3: kala switch grok   (Milestone 3: CLI + HTTP JSON API server)
-#   Phase 4: kala switch agy    (Milestone 4: Return to agy — integration tests, cross-agent bug fixes, README)
+#   Phase 1:  kala run agy       (Milestone 1: SQLite schema + double-entry engine)
+#   Phase 2:  kala switch claude (Milestone 2: Invoice lifecycle + aging + CSV)
+#   Phase 2b: Inject realistic Claude 5-hour session-limit error into .jsonl
+#   Phase 3:  kala recover -> cursor (Milestone 3: CLI + HTTP JSON API server)
+#   Phase 4:  kala switch grok   (Milestone 4: Integration tests, bug fixes, README)
 #
-# ZERO harness state edits after 00-seed: Kalaga's own state.yaml, live-ask,
-# modified_files, and handoffInject must carry the architecture across all 4 hops.
+# ZERO harness state edits after 00-seed: Kalaga's own state.yaml, FEAT-004 hooks,
+# limit recovery, live-ask, modified_files, and handoffInject carry all 4 hops.
 set -euo pipefail
 
 KALA_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,9 +35,39 @@ fi
 cat > .gitignore <<'EOF'
 .kala/
 .handoff-capture/
+.agents/hooks.json
+.claude/settings.local.json
 *.sqlite
 *.sqlite-*
 node_modules/
+EOF
+
+cat > "$KALA_HOME/config.yaml" <<'EOF'
+hooks:
+  enabled: true
+  edit_threshold: 2
+  max_age_minutes: 10
+  cooldown_minutes: 1
+  timeout_seconds: 5
+EOF
+
+mkdir -p .claude
+cat > .claude/settings.local.json <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Glob",
+      "Grep",
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(kala *)"
+    ]
+  }
+}
 EOF
 
 cat > SPEC.md <<'EOF'
@@ -114,9 +146,12 @@ snapshot() {
   } > "$dir/META.txt"
 
   [[ -f .kala/state.yaml ]] && cp .kala/state.yaml "$dir/state.yaml" || echo "(missing)" > "$dir/state.yaml"
+  [[ -f .kala/.hook-state.json ]] && cp .kala/.hook-state.json "$dir/hook-state.json" || echo "(missing)" > "$dir/hook-state.json"
+  [[ -f .kala/hook-errors.log ]] && cp .kala/hook-errors.log "$dir/hook-errors.log" || echo "(none)" > "$dir/hook-errors.log"
   node "$KALA_BIN" status >"$dir/kala-status.txt" 2>&1 || true
   node "$KALA_BIN" why >"$dir/kala-why.txt" 2>&1 || true
   node "$KALA_BIN" trust >"$dir/kala-trust.txt" 2>&1 || true
+  node "$KALA_BIN" hooks status >"$dir/kala-hooks-status.txt" 2>&1 || true
   git status --short >"$dir/git-status.txt" 2>&1 || true
   git diff HEAD >"$dir/git-diff.txt" 2>&1 || true
   find . -maxdepth 3 -type f \
@@ -174,8 +209,9 @@ for line in plain.splitlines():
     s = line.strip()
     if any(k in s.lower() for k in (
         "kalaga:", "kalaga →", "kalaga handoff", "kalaga session context",
-        "trust this directory", "trust recorded", "hand off, or stay",
-        "continue on", "staying put", "live-ask", "asking "
+        "kalaga path trust", "trust this directory", "trust recorded",
+        "skipped — launching", "hand off, or stay", "continue on",
+        "staying put", "live-ask", "asking ", "limit hit", "hook", "blocked"
     )):
         seam_lines.append(s[:240])
 (d / "seam-events.txt").write_text("\n".join(seam_lines) + "\n")
@@ -195,7 +231,7 @@ PY
   fi
 }
 
-# ---------------- SEED ONCE (NO FURTHER HARNESS STATE EDITS!) ----------------
+# ---------------- SEED ONCE + INSTALL FEAT-004 HOOKS ----------------
 node "$KALA_BIN" init
 node "$KALA_BIN" state goal "Build LedgerLite per SPEC.md across 4 milestones (SQLite double-entry ledger, invoicing + CSV, CLI + HTTP API, integration test suite)"
 node "$KALA_BIN" state next "Complete ONLY Milestone 1 in SPEC.md: create package.json, src/db.js, and src/ledger.js; sanity-check with node -e; update .kala/state.yaml (done + next_step -> Milestone 2) and stop."
@@ -205,38 +241,84 @@ node "$KALA_BIN" state note "Read SPEC.md first. Integer cents only (no floats);
 node "$KALA_BIN" state neg "Do not add any npm dependencies; use Node >= 24 built-ins only"
 node "$KALA_BIN" state neg "Do not implement future milestones early; stop after updating .kala/state.yaml for the next agent"
 
-snapshot "00-seed" "initial seed (harness will NOT touch kala state again)"
+node "$KALA_BIN" hooks install
+HOOKS_STATUS_INIT="$(node "$KALA_BIN" hooks status)"
+echo "$HOOKS_STATUS_INIT"
+[[ "$HOOKS_STATUS_INIT" == *"claude: installed"* ]] || { echo "ERROR: claude hook not installed"; exit 1; }
+[[ "$HOOKS_STATUS_INIT" == *"agy:    installed"* ]] || { echo "ERROR: agy hook not installed"; exit 1; }
 
-# Phase 1: agy builds Milestone 1
+snapshot "00-seed" "initial seed + FEAT-004 hooks installed (harness will NOT touch kala state again)"
+
+# Phase 1: agy builds Milestone 1 (with FEAT-004 hooks)
 run_phase "01-agy-m1" "run agy" \
   "--wait-path package.json --wait-path src/db.js --wait-path src/ledger.js" \
   "Milestone 1 on agy (SQLite schema + double-entry core)" \
-  260
-
-# Phase 2: switch to cursor for Milestone 2 (NO manual kala state edit!)
-run_phase "02-cursor-m2" "switch cursor" \
-  "--wait-path src/invoices.js --wait-path src/export.js" \
-  "Switch agy -> cursor for Milestone 2 (invoices + aging + CSV)" \
   280
 
-# Phase 3: switch to grok for Milestone 3 (triggers live-ask on cursor's captured session!)
-run_phase "03-grok-m3" "switch grok" \
-  "--wait-path src/server.js --wait-path bin/ledgerlite" \
-  "Switch cursor -> grok for Milestone 3 (CLI + HTTP JSON API)" \
-  450
+# Phase 2: switch to claude for Milestone 2 (with FEAT-004 hooks)
+run_phase "02-claude-m2" "switch claude" \
+  "--wait-path src/invoices.js --wait-path src/export.js" \
+  "Switch agy -> claude for Milestone 2 (invoices + aging + CSV)" \
+  600
 
-# Phase 4: switch back to agy for Milestone 4 (triggers live-ask on grok's session; agy returns to test & reconcile all 3 agents' code!)
-run_phase "04-agy-m4" "switch agy" \
+# Phase 2b: Simulate a real Claude session/5-hour limit expiration
+echo
+echo "================================================================"
+echo "PHASE 02b — Simulate Claude 5-hour limit expiration in session .jsonl"
+echo "================================================================"
+CLAUDE_LIMIT_INFO="$(python3 - "$PROJECT" <<'PY'
+import json, pathlib, re, sys, time
+real_proj = str(pathlib.Path(sys.argv[1]).resolve())
+escaped = re.sub(r"[^a-zA-Z0-9]", "-", real_proj)
+proj_dir = pathlib.Path.home() / ".claude" / "projects" / escaped
+proj_dir.mkdir(parents=True, exist_ok=True)
+files = sorted(proj_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+if files:
+    target = files[0]
+    kind = "real-claude-session"
+else:
+    target = proj_dir / "simulated-limit-session.jsonl"
+    kind = "synthetic-fallback"
+event = {
+    "type": "error",
+    "is_error": True,
+    "cwd": real_proj,
+    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "error": "You have reached your 5-hour session limit. Usage limit reached — resets in 3 hours.",
+}
+with target.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(event) + "\n")
+print(f"{kind}:{target}")
+PY
+)"
+echo "  -> injected limit error into: $CLAUDE_LIMIT_INFO"
+snapshot "02b-limit-injected" "after simulated Claude limit hit ($CLAUDE_LIMIT_INFO)"
+
+# Phase 3: recover after Claude limit hit -> pick cursor for Milestone 3
+run_phase "03-recover-cursor-m3" "recover" \
+  "--pick-agent cursor --wait-path src/server.js --wait-path bin/ledgerlite" \
+  "kala recover after Claude limit -> cursor for Milestone 3 (CLI + HTTP JSON API)" \
+  420
+
+# Phase 4: switch to grok for Milestone 4 (triggers live-ask on cursor + integration tests)
+run_phase "04-grok-m4" "switch grok" \
   "--wait-path tests/ledgerlite.test.js --wait-path README.md" \
-  "Switch grok -> agy (return to first CLI) for Milestone 4 (test suite + bug fixes + README)" \
-  450
+  "Switch cursor -> grok for Milestone 4 (test suite + bug fixes + README)" \
+  540
 
-snapshot "05-final" "completed 4-milestone multi-CLI loop"
+# Phase 5: return to agy on already-trusted repo (verifies tests + exercises agy FEAT-004 hooks)
+run_phase "05-agy-verify" "switch agy" \
+  "--wait-path tests/ledgerlite.test.js --wait-path README.md" \
+  "Switch grok -> agy (return to first CLI) to verify full suite + agy hooks" \
+  360
 
-# ---------------- INDEPENDENT VERIFICATION OF BUILT APP ----------------
+snapshot "05-final" "completed 4-CLI + hook + limit-recovery LedgerLite loop"
+
+# ---------------- INDEPENDENT VERIFICATION OF BUILT APP + HOOKS + LIMIT ----------------
 {
   echo "=== Final Verification of LedgerLite ($STAMP) ==="
   echo "project: $PROJECT"
+  echo "claude_limit_source: $CLAUDE_LIMIT_INFO"
   echo
   echo "--- npm test ---"
   npm test 2>&1 || true
@@ -251,12 +333,37 @@ snapshot "05-final" "completed 4-milestone multi-CLI loop"
   node bin/ledgerlite --db "$SMOKE_DB" balance 2>&1 || true
   node bin/ledgerlite --db "$SMOKE_DB" export trial-balance 2>&1 || true
   echo
-  echo "--- Backslash & owner audit across all snapshots ---"
-  for snap in 00-seed 01-agy-m1-after 02-cursor-m2-after 03-grok-m3-after 04-agy-m4-after 05-final; do
+  echo "--- FEAT-004 Hook & Limit-Expiration Audit ---"
+  python3 - "$PROJECT" "$CAP" <<'PY'
+import json, pathlib, sys
+proj = pathlib.Path(sys.argv[1])
+cap = pathlib.Path(sys.argv[2])
+claude_cfg = json.loads((proj / ".claude" / "settings.local.json").read_text())
+perms_ok = isinstance(claude_cfg.get("permissions", {}).get("allow"), list) and len(claude_cfg["permissions"]["allow"]) >= 8
+hooks_ok = "PostToolUse" in claude_cfg.get("hooks", {}) and "Stop" in claude_cfg.get("hooks", {})
+agy_cfg = json.loads((proj / ".agents" / "hooks.json").read_text())
+agy_ok = "kalaga-checkpoint" in agy_cfg
+err_present = (proj / ".kala" / "hook-errors.log").exists()
+recover_seam = (cap / "03-recover-cursor-m3" / "seam-events.txt").read_text() if (cap / "03-recover-cursor-m3" / "seam-events.txt").exists() else ""
+limit_hit_seen = "limit hit" in recover_seam.lower() and "claude" in recover_seam.lower()
+no_live_ask_dead = "asking claude" not in recover_seam.lower()
+recover_state = (cap / "03-recover-cursor-m3-after" / "state.yaml").read_text() if (cap / "03-recover-cursor-m3-after" / "state.yaml").exists() else ""
+neg_recorded = "claude limit hit:" in recover_state
+grok_seam = (cap / "04-grok-m4" / "seam-events.txt").read_text() if (cap / "04-grok-m4" / "seam-events.txt").exists() else ""
+grok_false_cascade = "limit hit — grok" in grok_seam.lower()
+print(f"claude_permissions_preserved={perms_ok} claude_hooks_wired={hooks_ok}")
+print(f"agy_hooks_wired={agy_ok} hook_errors_log_present={err_present}")
+print(f"recover_limit_hit_seen={limit_hit_seen} skipped_live_ask_on_dead_claude={no_live_ask_dead} limit_constraint_recorded={neg_recorded}")
+print(f"grok_false_limit_cascade={grok_false_cascade}")
+PY
+  echo
+  echo "--- Backslash, owner & hook-state audit across all snapshots ---"
+  for snap in 00-seed 01-agy-m1-after 02-claude-m2-after 02b-limit-injected 03-recover-cursor-m3-after 04-grok-m4-after 05-agy-verify-after 05-final; do
     bs="$(grep '^state_backslashes:' "$CAP/$snap/META.txt" 2>/dev/null | cut -d' ' -f2 || echo '?')"
     own="$(grep '^owner:' "$CAP/$snap/state.yaml" 2>/dev/null | head -1 || echo 'owner: ?')"
     st="$(grep '^status:' "$CAP/$snap/state.yaml" 2>/dev/null | head -1 || echo 'status: ?')"
-    printf '%-20s %-18s %-20s backslashes=%s\n' "$snap" "$own" "$st" "$bs"
+    hs="$(tr -d '\n ' < "$CAP/$snap/hook-state.json" 2>/dev/null || echo '(missing)')"
+    printf '%-28s %-16s %-20s bs=%-3s hook=%s\n' "$snap" "$own" "$st" "$bs" "$hs"
   done
 } | tee "$CAP/VERIFICATION.txt"
 
