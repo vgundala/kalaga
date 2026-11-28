@@ -20,7 +20,7 @@ resume ids, and documented residuals.**
 | Resume ids cannot be CLI flags | Allowlist on capture, YAML load, and `kala resume` |
 | Limit detection is honest | Empty store ≠ limit; store-less recover needs confirmation |
 | No silent `--assume-limit` off-TTY | Flag alone works on a TTY; scripts/CI need `KALA_ASSUME_LIMIT=1` as well |
-| Opt-in, non-destructive hooks | `kala hooks install` / `uninstall` edits only `.claude/settings.local.json` (never `.claude/settings.json`), `"kalaga-checkpoint"` in `.agents/hooks.json`, `.cursor/hooks.json`, and `.grok/hooks/kalaga-checkpoint.json`; aborts on malformed JSON and refuses symlinks |
+| Non-destructive hooks with uninstall | `kala init` (unless `--no-hooks`) and `kala hooks install` notify the user and merge repo-local hooks only into `.claude/settings.local.json` (never `.claude/settings.json`), `"kalaga-checkpoint"` in `.agents/hooks.json`, `.cursor/hooks.json`, and `.grok/hooks/kalaga-checkpoint.json`; abort on malformed JSON, refuse symlinks, and reverse cleanly with `kala hooks uninstall` |
 | Bounded, fail-open hook runner | `kala _hook` caps stdin at 64 KB, enforces a 2s deadline, refuses symlinks on `.hook-state.json` / `hook-errors.log`, logs only sanitized bounded errors (`≤32 KB`, never raw stdin), and always exits `0` with `{}` |
 | Supply chain surface | Zero `dependencies` in `package.json` |
 
@@ -37,7 +37,7 @@ These are accepted residuals — product choices or vendor limits, not forgotten
 5. **Windows smoke.** PATH and `PATHEXT` resolution is implemented. Full interactive smoke on Windows or macOS may still be skipped on a given release. Check the changelog.
 6. **Live-ask.** A headless call to the finishing agent can spend remaining quota and merges only sanitized YAML keys; junk/timeout fails soft.
 7. **Vendor folder trust ≠ Kalaga grant.** A Kalaga path grant only gates Kalaga’s own `trustFlags` (e.g. Cursor `--trust`). Claude Code has no such flag; on a directory it has not accepted yet it still shows its own “trust this folder?” prompt. Kalaga prints a one-line caveat before launching Claude so that is expected.
-8. **Opt-in project hook configs.** `kala hooks install` is explicit and reversible (`kala hooks uninstall`), writing machine-local `bin/kala` paths into `.claude/settings.local.json`, `.agents/hooks.json`, `.cursor/hooks.json`, and `.grok/hooks/kalaga-checkpoint.json` (and warning when `.agents/hooks.json`, `.cursor/hooks.json`, or `.grok/hooks/kalaga-checkpoint.json` is not gitignored). It never modifies `.claude/settings.json` or vendor-global configs.
+8. **Project hook configs.** `kala init` (skip with `--no-hooks`) and `kala hooks install` write machine-local `bin/kala` hook entries into `.claude/settings.local.json`, `.agents/hooks.json`, `.cursor/hooks.json`, and `.grok/hooks/kalaga-checkpoint.json`, print the installed list + `kala hooks uninstall` instructions to stderr, and warn when `.agents/hooks.json`, `.cursor/hooks.json`, or `.grok/hooks/kalaga-checkpoint.json` is not gitignored. All changes are reversible (`kala hooks uninstall`) and never modify `.claude/settings.json` or vendor-global configs.
 
 ## Threat notes for people who fork or point agents at this repo
 

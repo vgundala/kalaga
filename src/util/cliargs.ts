@@ -7,7 +7,7 @@ export interface ParsedCliArgs {
   action: 'run' | 'version' | 'help' | 'error';
 }
 
-const KNOWN_FLAGS = new Set(['--assume-limit', '--strict-state', '--force', '--all']);
+const KNOWN_FLAGS = new Set(['--assume-limit', '--strict-state', '--force', '--all', '--no-hooks']);
 const VALUE_FLAGS = new Set(['--agent', '--event', '--agents']);
 
 /** Parse CLI argv tokens (excluding node and script) with scoped flag handling. */

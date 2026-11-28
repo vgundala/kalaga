@@ -443,7 +443,7 @@ function doState(sub: string | null, text: string): void {
   console.error(`kalaga: state updated (${sub})`);
 }
 
-function doInit(force: boolean): void {
+async function doInit(force: boolean, installProjectHooks = true): Promise<void> {
   const f = stateFile(repoDir);
   if (!force && fs.existsSync(f)) {
     let linked = false;
@@ -459,6 +459,26 @@ function doInit(force: boolean): void {
   s.notes = gitSummary(repoDir);
   saveState(repoDir, s);
   console.error(`kalaga: .kala/state.yaml created (branch=${branch ?? '—'}, ${s.modified_files.length} files)`);
+
+  if (!installProjectHooks) {
+    console.error('kalaga: skipped checkpoint hooks (--no-hooks); install anytime with: kala hooks install');
+    return;
+  }
+
+  const { SUPPORTED_HOOK_AGENTS, installHooks } = await import('./hooks.ts');
+  const installed = SUPPORTED_HOOK_AGENTS.filter((k) => isInstalled(agentFor(k)));
+  if (installed.length === 0) {
+    console.error('kalaga: no supported agent CLIs on PATH — skipped checkpoint hooks (install later: kala hooks install --agents claude,agy,cursor,grok)');
+    return;
+  }
+  try {
+    const res = installHooks(repoDir, { agents: installed });
+    console.error(`kalaga: checkpoint hooks installed for: ${res.agents.join(', ')}`);
+    console.error('  (keeps .kala/state.yaml updated automatically as agents work)');
+    console.error('  status: kala hooks status  ·  remove anytime: kala hooks uninstall  ·  skip on init: kala init --no-hooks');
+  } catch (e) {
+    console.error(`kalaga: warning — could not install checkpoint hooks (${(e as Error).message}); run \`kala hooks install\` to retry`);
+  }
 }
 
 function doTrust(args: string[]): void {
@@ -484,7 +504,8 @@ function printHelp(): void {
   console.log(`kalaga — local handoff across agy / cursor / grok / claude
 
   kala                      pick an installed agent and start
-  kala init [--force]       create .kala/state.yaml (no overwrite unless --force)
+  kala init [--force] [--no-hooks]
+                            create .kala/state.yaml + install checkpoint hooks
   kala status               headroom per agent + handoff state
   kala run <agent>          interactive session; on exit, offer a handoff
   kala recover              trap after a limit (even if launched outside kala)
@@ -507,6 +528,7 @@ function printHelp(): void {
     --assume-limit          on a TTY, treat a store-less exit as a limit hit
     --strict-state          kala switch refuses while the handoff state is thin
     --force                 kala init replaces an existing state file
+    --no-hooks              skip automatic checkpoint hook setup during kala init
     --agents <list>         comma-separated hook agents (claude,agy,cursor,grok)
 
   Headroom for Claude and Grok is labeled [logged] (what the local store
@@ -569,7 +591,7 @@ async function main(): Promise<void> {
     case 'resume': await doResume(rest[0] ?? null); break;
     case 'state': doState(rest[0] ?? null, rest.slice(1).join(' ')); break;
     case 'trust': doTrust(rest); break;
-    case 'init': doInit(activeFlags.has('--force')); break;
+    case 'init': await doInit(activeFlags.has('--force'), !activeFlags.has('--no-hooks')); break;
     case 'agents': {
       const ledger = await readLedger(repoDir);
       console.log(ledger.map((u) => `${u.agent}${u.installed ? '' : ' (not installed)'}`).join(' '));

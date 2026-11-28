@@ -80,7 +80,7 @@ kala resume claude
 
 ```text
 kala                               Pick an installed agent and start
-kala init [--force]                Create .kala/state.yaml (no overwrite unless --force)
+kala init [--force] [--no-hooks]   Create .kala/state.yaml and install checkpoint hooks
 kala status                        Headroom + handoff summary
 kala run <agent>                   Interactive session; post-exit handoff
 kala recover                       Trap after a limit when the agent was launched outside kala
@@ -100,7 +100,7 @@ kala agents                        List known agent keys
 kala --version                     Print the version (-v works too)
 ```
 
-`--assume-limit`, `--strict-state`, and `--force` may appear before or after the command. `--strict-state` makes `kala switch` refuse while the handoff file is too thin to continue. `--force` lets `kala init` replace an existing `.kala/state.yaml`.
+`--assume-limit`, `--strict-state`, `--force`, and `--no-hooks` may appear before or after the command. `--strict-state` makes `kala switch` refuse while the handoff file is too thin to continue. `--force` lets `kala init` replace an existing `.kala/state.yaml`, and `--no-hooks` skips automatic checkpoint hook setup during `kala init`.
 
 ### Post-exit behavior
 
@@ -135,7 +135,7 @@ a limit assumption nobody saw.
 
 **Live-ask:** `kala switch` may ask the previous agent for a YAML update when Kalaga still has a fresh session id for that agent (headless, 30 second timeout). The call resumes that session and passes the vendor trust flag when this directory already has a Kalaga grant. A limit exit does not ask the agent that just ran out. If the ask fails, the existing state stays.
 
-**Continuous checkpointing (`kala hooks`):** Run `kala hooks install` in a project to wire opt-in, non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`), Antigravity (`.agents/hooks.json`), Cursor (`.cursor/hooks.json`), and/or Grok (`.grok/hooks/kalaga-checkpoint.json`) — or pass `--agents claude,agy,cursor,grok` explicitly. While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` (deduplicating cross-vendor calls) and nudges the active agent to refresh `.kala/state.yaml` when stale. Grok requires project folder trust (`/hooks-trust`) before executing repo hooks. Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` to remove only Kalaga entries cleanly.
+**Continuous checkpointing (`kala init` / `kala hooks`):** `kala init` automatically installs non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`), Antigravity (`.agents/hooks.json`), Cursor (`.cursor/hooks.json`), and/or Grok (`.grok/hooks/kalaga-checkpoint.json`) — and notifies you on stderr (pass `kala init --no-hooks` to skip, or run `kala hooks install [--agents claude,agy,cursor,grok]` separately). While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` (deduplicating cross-vendor calls) and nudges the active agent to refresh `.kala/state.yaml` when stale. Grok requires project folder trust (`/hooks-trust`) before executing repo hooks. Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` at any time to remove only Kalaga entries cleanly.
 
 **Same-agent continuity:** `kala resume` reopens a captured session id when the vendor supports it. The conversation already has context, so Kalaga does not inject a handoff prompt. Session ids are discovered from each vendor’s local store when a stable signature exists (Claude jsonl, Cursor chat meta, Grok sqlite, Antigravity `~/.gemini/antigravity-cli`).
 

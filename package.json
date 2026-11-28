@@ -1,6 +1,6 @@
 {
   "name": "kalaga",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Kalaga (Telugu: a mix/blending) — local handoff across AI coding CLIs (Antigravity/agy, Cursor, Grok, Claude) when a usage limit hits.",
   "type": "module",
   "license": "MIT",

@@ -2399,6 +2399,70 @@ await test('H16: KALA_LIVE_ASK=1 isolated to runLiveAsk child env and stripped f
   }
 });
 
+await test('init: auto-installs hooks for PATH agents with notification & --no-hooks opt-out', () => {
+  const stubDir = path.join(ROOT, 'init-hook-stubs');
+  fs.mkdirSync(stubDir, { recursive: true });
+  const stubClaude = path.join(stubDir, 'claude');
+  fs.writeFileSync(stubClaude, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(stubClaude, 0o755);
+
+  const gitDir = path.dirname(execFileSync('which', ['git'], { encoding: 'utf8' }).trim());
+  const stubPath = [stubDir, gitDir].filter(Boolean).join(path.delimiter);
+  const emptyPath = gitDir;
+
+  // 1) Default `kala init` installs hooks for installed PATH agents and explains uninstall/--no-hooks
+  const r1 = path.join(ROOT, 'init-hooks-auto');
+  fs.mkdirSync(r1, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r1 });
+  const res1 = spawnSync(process.execPath, [BIN, 'init'], {
+    cwd: r1, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA, PATH: stubPath },
+  });
+  assert.strictEqual(res1.status, 0, res1.stderr);
+  assert.ok(fs.existsSync(path.join(r1, '.kala', 'state.yaml')));
+  assert.ok(fs.existsSync(path.join(r1, '.claude', 'settings.local.json')));
+  assert.match(res1.stderr, /checkpoint hooks installed for: claude/);
+  assert.match(res1.stderr, /kala hooks uninstall/);
+  assert.match(res1.stderr, /--no-hooks/);
+
+  // 2) `kala init --no-hooks` creates state without wiring hooks
+  const r2 = path.join(ROOT, 'init-hooks-skip');
+  fs.mkdirSync(r2, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r2 });
+  const res2 = spawnSync(process.execPath, [BIN, 'init', '--no-hooks'], {
+    cwd: r2, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA, PATH: stubPath },
+  });
+  assert.strictEqual(res2.status, 0, res2.stderr);
+  assert.ok(fs.existsSync(path.join(r2, '.kala', 'state.yaml')));
+  assert.strictEqual(fs.existsSync(path.join(r2, '.claude', 'settings.local.json')), false);
+  assert.match(res2.stderr, /skipped checkpoint hooks \(--no-hooks\)/);
+
+  // 3) No vendor CLIs on PATH still exits 0 cleanly
+  const r3 = path.join(ROOT, 'init-hooks-none');
+  fs.mkdirSync(r3, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r3 });
+  const res3 = spawnSync(process.execPath, [BIN, 'init'], {
+    cwd: r3, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA, PATH: emptyPath },
+  });
+  assert.strictEqual(res3.status, 0, res3.stderr);
+  assert.ok(fs.existsSync(path.join(r3, '.kala', 'state.yaml')));
+  assert.match(res3.stderr, /no supported agent CLIs on PATH/);
+
+  // 4) Symlinked vendor hook file fails soft without touching symlink target
+  const r4 = path.join(ROOT, 'init-hooks-symlink');
+  const victim = path.join(ROOT, 'init-hooks-victim.json');
+  fs.writeFileSync(victim, '{"untouched":true}\n');
+  fs.mkdirSync(path.join(r4, '.claude'), { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: r4 });
+  fs.symlinkSync(victim, path.join(r4, '.claude', 'settings.local.json'));
+  const res4 = spawnSync(process.execPath, [BIN, 'init'], {
+    cwd: r4, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA, PATH: stubPath },
+  });
+  assert.strictEqual(res4.status, 0, res4.stderr);
+  assert.ok(fs.existsSync(path.join(r4, '.kala', 'state.yaml')));
+  assert.match(res4.stderr, /could not install checkpoint hooks/);
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), '{"untouched":true}\n');
+});
+
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);
 fs.rmSync(ROOT, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);

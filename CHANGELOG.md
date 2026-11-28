@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 — 2026-11-28
+
+Automatic continuous checkpointing hook setup on `kala init`.
+
+- **`kala init` auto-hooks:** Automatically installs non-destructive project checkpoint hooks for supported CLIs found on `PATH` (`claude`, `agy`, `cursor`, `grok`), printing the installed agents plus `kala hooks status`, `kala hooks uninstall`, and `kala init --no-hooks` instructions on stderr.
+- **`--no-hooks` & fail-soft behavior:** Added `kala init --no-hooks` to skip hook installation; empty `PATH` or symlinked/malformed vendor hook configs fail soft with a warning without blocking `.kala/state.yaml` creation.
+- **Docs & tests:** Updated `README.md`, `SECURITY.md`, CLI `--help`, and `tests/run.ts` (`110` tests).
+
 ## 0.8.0 — 2026-11-27
 
 Continuous checkpointing hooks across all four supported CLIs (`claude`, `agy`, `cursor`, `grok`), Node 22 LTS support (`>=22.18.0`), and post-v0.7.0 UX/handoff hardening.
