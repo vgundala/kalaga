@@ -124,7 +124,7 @@ def main() -> int:
         last_action = time.time()
         print(f"pty_drive: ACTION {label} phase={phase}", flush=True)
 
-    def recent_plain(n: int = 1200) -> str:
+    def recent_plain(n: int = 4096) -> str:
         return strip_ansi(bytes(out[-n:])).lower()
 
     def work_done() -> bool:
@@ -197,12 +197,16 @@ def main() -> int:
             if phase in ("boot", "trust") and (
                 "trust this folder" in tail
                 or "trust the contents of this project" in tail
+                or "trust the contents of this directory" in tail
                 or "quick safety check" in tail
                 or "is this a project you created" in tail
             ):
                 phase = "trust"
                 on_no = bool(re.search(r"[❯>]\s*no", tail))
-                if on_no and trust_clicks < 5:
+                if "yes, proceed" in tail and trust_clicks < 5:
+                    trust_clicks += 1
+                    act("vendor-trust-y", b"y")
+                elif on_no and trust_clicks < 5:
                     trust_clicks += 1
                     time.sleep(0.5)
                     act("vendor-trust-down", b"\x1b[B")
@@ -220,6 +224,7 @@ def main() -> int:
                 phase == "trust"
                 and "trust this folder" not in tail
                 and "trust the contents" not in tail
+                and "trust the contents of this directory" not in tail
                 and "quick safety check" not in tail
                 and "is this a project you created" not in tail
             ):
@@ -229,6 +234,7 @@ def main() -> int:
             # --- Ready → working → exit when wait conditions met ---
             ready_hints = (
                 "escape to interrupt",
+                "esc to interrupt",
                 "shift+tab",
                 "type a message",
                 "ask anything",
@@ -237,6 +243,8 @@ def main() -> int:
                 "╭─",
                 "generating",
                 "thinking",
+                "inferring",
+                "? for shortcuts",
             )
             if phase in ("boot", "ready") and any(h in tail for h in ready_hints):
                 phase = "working"
@@ -334,6 +342,17 @@ def main() -> int:
 
     print(f"pty_drive: DONE child_exit={child_code} phase={phase} out_len={len(out)}", flush=True)
     print(strip_ansi(bytes(out))[-1800:], flush=True)
+    if wait_paths:
+        missing = []
+        for p in wait_paths:
+            try:
+                if os.path.getsize(p) <= 0:
+                    missing.append(p)
+            except OSError:
+                missing.append(p)
+        if missing:
+            print(f"pty_drive: FAIL missing wait-paths: {missing}", flush=True)
+            return 3
     return 0
 
 

@@ -27,6 +27,13 @@ Continuous checkpointing hooks across all four supported CLIs (`claude`, `agy`, 
 - Prevented self-poisoning limit-hit cascades by filtering `<agent> limit hit:` from injected `Avoid:` lines (`src/prompt.ts`) and skipping echoed/prior Kalaga limit notes in `scanChunk()` (`src/trap.ts`).
 - `liveAskAndMerge()` ignores YAML `null`/`~` values and merges/deduplicates `done` and `negative_constraints` lists; `afterExit()` skips false limit prompts on `exitCode === 127` and classifies non-zero `!hit` `agy` exits as `suspect`; `doRun`/`doSwitch` (after `--strict-state`)/`doResume` verify target CLI binary availability before mutating state.
 
+### Hardening & Reliability (`FEAT-003 v2`, `OPS-004`)
+
+- **Hooks-first, read-only `live-ask` (`FEAT-003 v2`):** `shouldSkipLiveAsk()` skips redundant `live-ask` calls during `kala switch` when hooks confirm `.kala/state.yaml` is non-thin and `editsSinceCheckpoint === 0`; enforces read-only vendor headless flags (`cursor --mode ask`, `agy --mode plan --effort low --disable-slash-commands`, `grok --permission-mode plan`, `claude --disallowedTools Edit,Write,MultiEdit,Bash`), raises timeout to `30s`, suppresses hooks via `KALA_LIVE_ASK=1`, and snapshots/restores `.kala/state.yaml` (preserving `sessions` UUIDs) if a child writes directly to disk.
+- **Scoped CLI flag parsing (`OPS-004`):** Extracted `parseCliArgs()` (`src/util/cliargs.ts`) stopping flag extraction after `kala state <field>` and supporting `--` end-of-flags, eliminating false exits when `state` text contains dash-prefixed tokens while preserving `K14` validation.
+- **Packaging, security & recovery hardening:** Full ancestor-segment `lstatSync` symlink walk in `src/hooks.ts` across all 4 vendors; source-first `bin/kala` loading + clean `npm test` without leaving `dist/`; canonical git worktree `resolveRepoDir()`; `agy` `metadataOnlyStore` + four-branch `doRecover --assume-limit`; `tailFile` partial leading-line drop + strict JSONL filtering in `claudePlainFromJsonl`; tighter `LIMIT_PATTERNS` + full-length clean-exit prose filtering in `scanChunk`; POSIX/WSL hook scope in `README.md` and repo-owned `.kala/state.yaml` trust boundary in `SECURITY.md`.
+- **4-CLI regression harness:** Updated `tests/e2e/pty_drive.py` (Claude v2.1.332 ready hints, Grok trust prompt + larger ANSI inspection window, missing `--wait-path` exit `3`) and `scripts/live-stress-ledgerlite.sh` (all 4 hook configs audited, non-zero exit on incomplete milestones/0 tests).
+
 ## 0.7.0 — 2026-11-25
 
 Soft-launch release: packaging for npm installs, handoff protocol hardening from the GTM audit, Antigravity session discovery, and documented vendor seams.

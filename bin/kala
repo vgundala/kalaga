@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Entry shim. A packed install loads dist/; a git checkout falls back to src/.
+// Entry shim. A git checkout runs src/; a packed install (no src/) runs dist/.
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,7 +9,7 @@ if (process.argv[2] === '_hook') {
   try {
     const distHook = join(here, '..', 'dist', 'hook.js');
     const srcHook = join(here, '..', 'src', 'hook.ts');
-    const mod = await import(pathToFileURL(existsSync(distHook) ? distHook : srcHook).href);
+    const mod = await import(pathToFileURL(existsSync(srcHook) ? srcHook : distHook).href);
     await mod.runHookCli(process.argv.slice(3));
   } catch {
     process.stdout.write('{}\n');
@@ -18,5 +18,5 @@ if (process.argv[2] === '_hook') {
 } else {
   const dist = join(here, '..', 'dist', 'index.js');
   const src = join(here, '..', 'src', 'index.ts');
-  await import(pathToFileURL(existsSync(dist) ? dist : src).href);
+  await import(pathToFileURL(existsSync(src) ? src : dist).href);
 }

@@ -21,9 +21,12 @@ PROJECT="${LEDGERLITE_ROOT:-$(mktemp -d -t kala-ledgerlite-XXXXXX)}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 CAP="$PROJECT/.handoff-capture/$STAMP"
 export KALA_HOME="${KALA_HOME:-$CAP/kala-home}"
+PHASE_FAILS=0
 
-# Ensure dist/ is built so bin/kala executes the packaged JS artifact.
-(cd "$KALA_REPO" && npm run build >/dev/null)
+# Ensure dist/ is built when running from a packaged install without src/.
+if [[ ! -f "$KALA_REPO/src/index.ts" ]]; then
+  (cd "$KALA_REPO" && npm run build >/dev/null)
+fi
 
 mkdir -p "$PROJECT" "$CAP" "$KALA_HOME"
 cd "$PROJECT"
@@ -37,6 +40,8 @@ cat > .gitignore <<'EOF'
 .handoff-capture/
 .agents/hooks.json
 .claude/settings.local.json
+.cursor/
+.grok/
 *.sqlite
 *.sqlite-*
 node_modules/
@@ -191,6 +196,9 @@ run_phase() {
     >"$CAP/$phase/pty.stdout" 2>"$CAP/$phase/pty.stderr"
   ec=$?
   set -e
+  if [[ "$ec" -ne 0 ]]; then
+    PHASE_FAILS=$((PHASE_FAILS + 1))
+  fi
   t1="$(date +%s)"
   elapsed=$((t1 - t0))
   printf 'exit=%s\nelapsed_sec=%s\ncommand=kala %s\n' "$ec" "$elapsed" "$kala_cmd" >"$CAP/$phase/TIMING.txt"
@@ -246,6 +254,12 @@ HOOKS_STATUS_INIT="$(node "$KALA_BIN" hooks status)"
 echo "$HOOKS_STATUS_INIT"
 [[ "$HOOKS_STATUS_INIT" == *"claude: installed"* ]] || { echo "ERROR: claude hook not installed"; exit 1; }
 [[ "$HOOKS_STATUS_INIT" == *"agy:    installed"* ]] || { echo "ERROR: agy hook not installed"; exit 1; }
+if command -v cursor-agent >/dev/null 2>&1; then
+  printf '%s\n' "$HOOKS_STATUS_INIT" | grep -Eq '^[[:space:]]*cursor:[[:space:]]+installed' || { echo "ERROR: cursor hook not installed"; exit 1; }
+fi
+if command -v grok >/dev/null 2>&1; then
+  printf '%s\n' "$HOOKS_STATUS_INIT" | grep -Eq '^[[:space:]]*grok:[[:space:]]+installed' || { echo "ERROR: grok hook not installed"; exit 1; }
+fi
 
 snapshot "00-seed" "initial seed + FEAT-004 hooks installed (harness will NOT touch kala state again)"
 
@@ -321,7 +335,13 @@ snapshot "05-final" "completed 4-CLI + hook + limit-recovery LedgerLite loop"
   echo "claude_limit_source: $CLAUDE_LIMIT_INFO"
   echo
   echo "--- npm test ---"
-  npm test 2>&1 || true
+  set +e
+  npm test >"$CAP/npm-test.log" 2>&1
+  npm_ec=$?
+  set -e
+  cat "$CAP/npm-test.log"
+  echo "$npm_ec" >"$CAP/npm-test.exit"
+  echo "npm_test_exit=$npm_ec"
   echo
   echo "--- CLI end-to-end smoke ---"
   SMOKE_DB="$CAP/smoke.sqlite"
@@ -335,14 +355,29 @@ snapshot "05-final" "completed 4-CLI + hook + limit-recovery LedgerLite loop"
   echo
   echo "--- FEAT-004 Hook & Limit-Expiration Audit ---"
   python3 - "$PROJECT" "$CAP" <<'PY'
-import json, pathlib, sys
+import json, pathlib, re, sys
 proj = pathlib.Path(sys.argv[1])
 cap = pathlib.Path(sys.argv[2])
-claude_cfg = json.loads((proj / ".claude" / "settings.local.json").read_text())
+
+def load_json(p: pathlib.Path) -> dict:
+    try:
+        data = json.loads(p.read_text()) if p.is_file() else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+claude_cfg = load_json(proj / ".claude" / "settings.local.json")
 perms_ok = isinstance(claude_cfg.get("permissions", {}).get("allow"), list) and len(claude_cfg["permissions"]["allow"]) >= 8
 hooks_ok = "PostToolUse" in claude_cfg.get("hooks", {}) and "Stop" in claude_cfg.get("hooks", {})
-agy_cfg = json.loads((proj / ".agents" / "hooks.json").read_text())
+agy_cfg = load_json(proj / ".agents" / "hooks.json")
 agy_ok = "kalaga-checkpoint" in agy_cfg
+cursor_cfg = load_json(proj / ".cursor" / "hooks.json")
+cursor_hooks = cursor_cfg.get("hooks", {}) if isinstance(cursor_cfg.get("hooks"), dict) else {}
+cursor_ok = "postToolUse" in cursor_hooks and "stop" in cursor_hooks
+grok_cfg = load_json(proj / ".grok" / "hooks" / "kalaga-checkpoint.json")
+grok_hooks = grok_cfg.get("hooks", {}) if isinstance(grok_cfg.get("hooks"), dict) else {}
+grok_ok = "PostToolUse" in grok_hooks and "Stop" in grok_hooks
+
 err_present = (proj / ".kala" / "hook-errors.log").exists()
 recover_seam = (cap / "03-recover-cursor-m3" / "seam-events.txt").read_text() if (cap / "03-recover-cursor-m3" / "seam-events.txt").exists() else ""
 limit_hit_seen = "limit hit" in recover_seam.lower() and "claude" in recover_seam.lower()
@@ -351,11 +386,37 @@ recover_state = (cap / "03-recover-cursor-m3-after" / "state.yaml").read_text() 
 neg_recorded = "claude limit hit:" in recover_state
 grok_seam = (cap / "04-grok-m4" / "seam-events.txt").read_text() if (cap / "04-grok-m4" / "seam-events.txt").exists() else ""
 grok_false_cascade = "limit hit — grok" in grok_seam.lower()
+
+state_yaml = (proj / ".kala" / "state.yaml").read_text() if (proj / ".kala" / "state.yaml").is_file() else ""
+m_status = re.search(r"(?m)^status:\s*['\"]?([A-Za-z0-9_-]+)['\"]?", state_yaml)
+ledgerlite_status = m_status.group(1) if m_status else "MISSING"
+status_completed = ledgerlite_status == "COMPLETED"
+tests_exist = (proj / "tests" / "ledgerlite.test.js").is_file() and (proj / "tests" / "ledgerlite.test.js").stat().st_size > 0
+readme_exist = (proj / "README.md").is_file() and (proj / "README.md").stat().st_size > 0
+
+audit_ok = all([
+    perms_ok,
+    hooks_ok,
+    agy_ok,
+    cursor_ok,
+    grok_ok,
+    limit_hit_seen,
+    no_live_ask_dead,
+    neg_recorded,
+    not grok_false_cascade,
+    status_completed,
+    tests_exist,
+    readme_exist,
+])
+
 print(f"claude_permissions_preserved={perms_ok} claude_hooks_wired={hooks_ok}")
-print(f"agy_hooks_wired={agy_ok} hook_errors_log_present={err_present}")
+print(f"agy_hooks_wired={agy_ok} cursor_hooks_wired={cursor_ok} grok_hooks_wired={grok_ok} hook_errors_log_present={err_present}")
 print(f"recover_limit_hit_seen={limit_hit_seen} skipped_live_ask_on_dead_claude={no_live_ask_dead} limit_constraint_recorded={neg_recorded}")
 print(f"grok_false_limit_cascade={grok_false_cascade}")
+print(f"ledgerlite_status={ledgerlite_status} status_completed={status_completed} tests_exist={tests_exist} readme_exist={readme_exist}")
+print(f"STRESS_AUDIT_OK={audit_ok}")
 PY
+  echo "phase_fails=$PHASE_FAILS"
   echo
   echo "--- Backslash, owner & hook-state audit across all snapshots ---"
   for snap in 00-seed 01-agy-m1-after 02-claude-m2-after 02b-limit-injected 03-recover-cursor-m3-after 04-grok-m4-after 05-agy-verify-after 05-final; do
@@ -367,5 +428,29 @@ PY
   done
 } | tee "$CAP/VERIFICATION.txt"
 
+GATE_ERRORS=()
+if [[ "$PHASE_FAILS" -gt 0 ]]; then
+  GATE_ERRORS+=("phase_fails=$PHASE_FAILS")
+fi
+if ! grep -qx 'STRESS_AUDIT_OK=True' "$CAP/VERIFICATION.txt"; then
+  GATE_ERRORS+=("STRESS_AUDIT_OK!=True")
+fi
+if [[ ! -s tests/ledgerlite.test.js ]]; then
+  GATE_ERRORS+=("missing_or_empty=tests/ledgerlite.test.js")
+fi
+if [[ ! -s README.md ]]; then
+  GATE_ERRORS+=("missing_or_empty=README.md")
+fi
+NPM_TEST_EC="$(cat "$CAP/npm-test.exit" 2>/dev/null || echo 1)"
+if [[ "$NPM_TEST_EC" -ne 0 ]]; then
+  GATE_ERRORS+=("npm_test_failed_exit=$NPM_TEST_EC")
+elif ! grep -Eq 'tests[[:space:]]+[1-9][0-9]*' "$CAP/npm-test.log" 2>/dev/null; then
+  GATE_ERRORS+=("npm_test_ran_0_tests")
+fi
+
 echo
 echo "STRESS CAPTURE COMPLETE: $CAP"
+if [[ "${#GATE_ERRORS[@]}" -gt 0 ]]; then
+  echo "STRESS VERIFICATION FAILED: ${GATE_ERRORS[*]}" >&2
+  exit 1
+fi

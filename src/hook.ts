@@ -113,7 +113,12 @@ export function findRepoRoot(
     start = fallbackCwd;
   }
 
-  let dir = path.resolve(start);
+  let dir: string;
+  try {
+    dir = fs.realpathSync.native(start);
+  } catch {
+    dir = path.resolve(start);
+  }
   while (true) {
     const kalaDir = path.join(dir, '.kala');
     const stateFile = path.join(kalaDir, 'state.yaml');
@@ -335,6 +340,10 @@ export function evaluateHook(opts: {
     lastStateSize: 0,
     lastToolUseId: null,
   };
+
+  if ((opts.env ?? process.env).KALA_LIVE_ASK === '1') {
+    return { shouldNudge: false, editsSinceCheckpoint: 0, state: emptyState };
+  }
 
   if (!config.enabled) {
     return { shouldNudge: false, editsSinceCheckpoint: 0, state: emptyState };
@@ -665,6 +674,11 @@ function readStdinBounded(
 }
 
 export async function runHookCli(argv: string[]): Promise<void> {
+  if (process.env.KALA_LIVE_ASK === '1') {
+    process.stdout.write('{}\n');
+    process.exitCode = 0;
+    return;
+  }
   let emitted = false;
   const emit = (obj: Record<string, unknown>): void => {
     if (emitted) return;

@@ -25,7 +25,7 @@ import type { AgentConfig } from './config.ts';
 import { readLedger } from './ledger.ts';
 import { loadState, mergeState, blankState, saveState, captureSession, isThinState } from './state/state.ts';
 import type { HandoffState } from './state/state.ts';
-import { currentBranch, modifiedFiles, gitSummary } from './state/git.ts';
+import { currentBranch, modifiedFiles, gitSummary, resolveRepoDir } from './state/git.ts';
 import { rankTakers, isFresh } from './router.ts';
 import { pick } from './picker.ts';
 import { runAgent, lastSessionText, normalizeSessionId, resumeAgent, sessionFresh } from './launch.ts';
@@ -33,13 +33,13 @@ import { sessionHintFor } from './ledger.ts';
 import { scanChunk, classifyExit } from './trap.ts';
 import { hasTrustGrant, promptTrustGrant, trustStatus, revokeTrust } from './trust.ts';
 import { handoffInject, nextStepHint, injectRichPrompt, STANDING_ORDERS, FIELD_MAX, sanitizeHandoffField } from './prompt.ts';
-import { liveAskAndMerge } from './liveask.ts';
+import { liveAskAndMerge, shouldSkipLiveAsk } from './liveask.ts';
 import { readSingleKeyOrLine } from './util/ttyask.ts';
+import { parseCliArgs } from './util/cliargs.ts';
 
-const repoDir = process.cwd();
+let repoDir = process.cwd();
+let activeFlags = new Set<string>();
 const MAX_HANDOFF_HOPS = 8;
-const KNOWN_FLAGS = new Set(['--assume-limit', '--strict-state', '--force', '--all']);
-const VALUE_FLAGS = new Set(['--agent', '--event', '--agents']);
 
 function fmt(n: number): string { return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n); }
 
@@ -184,7 +184,7 @@ function exitNotice(agentKey: string, exitCode: number, hit: ReturnType<typeof s
 /** `--assume-limit` gate. On a TTY the flag alone suffices. Off-TTY the flag
  *  is ignored unless KALA_ASSUME_LIMIT=1. */
 function assumeLimitFlagged(): boolean {
-  if (!process.argv.includes('--assume-limit')) return false;
+  if (!activeFlags.has('--assume-limit')) return false;
   if (process.stdin.isTTY) return true;
   return process.env.KALA_ASSUME_LIMIT === '1';
 }
@@ -216,7 +216,7 @@ async function afterExit(agentKey: string, exitCode: number, hop = 0): Promise<v
     await refreshState(null);
     return;
   }
-  const hasTail = tail !== '' && !(agentKey === 'agy' && !hit && exitCode !== 0);
+  const hasTail = tail !== '' && !(cfg.metadataOnlyStore && !hit) && !(assumeLimitFlagged() && !hit);
   const tier = classifyExit({ hit, exitCode, hasTail });
   exitNotice(agentKey, exitCode, hit, hasTail);
 
@@ -329,22 +329,23 @@ async function doRecover(): Promise<void> {
   if (!dead) { console.error('kalaga: no recent agent session found here — nothing to recover.'); return; }
   const cfg = agentFor(dead);
   const tail = (await lastSessionText(cfg, repoDir)).slice(-4000);
-  if (tail) {
-    const hit = scanChunk(tail, cfg, null);
-    if (!hit) {
-      console.error(`kalaga: ${dead} has no limit signature in its recent log — recover only after a limit hit.`);
-      console.error('  (if it really did hit a limit, Kalaga did not recognize a limit phrase in that log.)');
-      return;
-    }
-  } else {
-    const assume = assumeLimitFlagged();
-    let ok = assume;
-    if (!ok && process.stdin.isTTY) {
-      process.stderr.write(`  no session log to scan for ${dead} — assume it hit its limit? [y/N] `);
+  const hit = tail ? scanChunk(tail, cfg, null) : null;
+  if (hit) {
+    // verified limit hit — proceed to offerHandoff
+  } else if (assumeLimitFlagged()) {
+    console.error(`  kalaga: limit hit assumed — ${dead} (--assume-limit)`);
+  } else if (!tail || cfg.metadataOnlyStore) {
+    let ok = false;
+    if (process.stdin.isTTY) {
+      process.stderr.write(`  no verifiable session log for ${dead} — assume it hit its limit? [y/N] `);
       ok = (await readSingleKeyOrLine()).trim().toLowerCase() === 'y';
     }
     if (!ok) { console.error('kalaga: not assuming a limit hit — rerun with --assume-limit or confirm.'); return; }
-    console.error(`  kalaga: limit hit assumed — ${dead} (no store to verify)`);
+    console.error(`  kalaga: limit hit assumed — ${dead} (no verifiable log)`);
+  } else {
+    console.error(`kalaga: ${dead} has no limit signature in its recent log — recover only after a limit hit.`);
+    console.error('  (if it really did hit a limit, rerun with: kala recover --assume-limit)');
+    return;
   }
   const launched = await offerHandoff(dead);
   if (launched) await afterExit(launched.agent, launched.exitCode, 1);
@@ -360,11 +361,16 @@ async function doSwitch(agentKey: string): Promise<void> {
     prev && prev !== agentKey && isInstalled(agentFor(prev)) &&
     prevRec?.id && await sessionFresh(agentFor(prev), repoDir, prevRec)
   ) {
-    await liveAskAndMerge(agentFor(prev), repoDir, undefined, prevRec.id, hasTrustGrant(repoDir));
+    const skipCheck = shouldSkipLiveAsk(repoDir, pre);
+    if (skipCheck.skip) {
+      console.error('  kalaga: skipping live-ask — .kala/state.yaml already checkpointed by hooks');
+    } else {
+      await liveAskAndMerge(agentFor(prev), repoDir, undefined, prevRec.id, hasTrustGrant(repoDir));
+    }
   }
   const after = loadState(repoDir) ?? pre;
   if (isThinState(after)) {
-    if (process.argv.includes('--strict-state')) {
+    if (activeFlags.has('--strict-state')) {
       console.error('kalaga: state is thin and --strict-state was set — refusing to switch. Enrich first: kala state …');
       return;
     }
@@ -458,7 +464,7 @@ function doInit(force: boolean): void {
 function doTrust(args: string[]): void {
   const sub = args[0];
   if (sub === 'revoke') {
-    const all = process.argv.includes('--all');
+    const all = activeFlags.has('--all');
     revokeTrust(all ? null : (args[1] ?? null), all);
     console.error(all ? 'kalaga: all trust grants revoked' : `kalaga: trust revoked for ${args[1] ?? '(current dir)'}`);
     return;
@@ -517,37 +523,17 @@ async function main(): Promise<void> {
     await runHookCli(raw.slice(1));
     return;
   }
-  const positionals: string[] = [];
-  const flagValues = new Map<string, string>();
-  for (let i = 0; i < raw.length; i++) {
-    const a = raw[i];
-    if (KNOWN_FLAGS.has(a)) continue;
-    if (a === '-v' || a === '--version') { printVersion(); return; }
-    if (a === '-h' || a === '--help') { printHelp(); return; }
-    const eqIdx = a.indexOf('=');
-    const flagName = eqIdx > 0 ? a.slice(0, eqIdx) : a;
-    if (VALUE_FLAGS.has(flagName)) {
-      if (eqIdx > 0) {
-        flagValues.set(flagName, a.slice(eqIdx + 1));
-      } else {
-        const next = raw[i + 1];
-        if (next === undefined || next.startsWith('-')) {
-          printHelp();
-          process.exitCode = 2;
-          return;
-        }
-        flagValues.set(flagName, next);
-        i++;
-      }
-      continue;
-    }
-    if (a.startsWith('-')) {
-      printHelp();
-      process.exitCode = 2;
-      return;
-    }
-    positionals.push(a);
+  const parsed = parseCliArgs(raw);
+  if (parsed.action === 'version') { printVersion(); return; }
+  if (parsed.action === 'help') { printHelp(); return; }
+  if (parsed.action === 'error') {
+    printHelp();
+    process.exitCode = 2;
+    return;
   }
+  activeFlags = parsed.flags;
+  const { positionals, flagValues } = parsed;
+  repoDir = resolveRepoDir();
   const [cmd, ...rest] = positionals;
   if (cmd !== '_hook' && (flagValues.has('--agent') || flagValues.has('--event'))) {
     printHelp();
@@ -583,7 +569,7 @@ async function main(): Promise<void> {
     case 'resume': await doResume(rest[0] ?? null); break;
     case 'state': doState(rest[0] ?? null, rest.slice(1).join(' ')); break;
     case 'trust': doTrust(rest); break;
-    case 'init': doInit(raw.includes('--force')); break;
+    case 'init': doInit(activeFlags.has('--force')); break;
     case 'agents': {
       const ledger = await readLedger(repoDir);
       console.log(ledger.map((u) => `${u.agent}${u.installed ? '' : ' (not installed)'}`).join(' '));

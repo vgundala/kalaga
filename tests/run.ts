@@ -39,6 +39,7 @@ const picker = await import(`${SRC}/picker.ts`);
 const yaml = await import(`${SRC}/util/yaml.ts`);
 const gitmod = await import(`${SRC}/state/git.ts`);
 const ledger = await import(`${SRC}/ledger.ts`);
+const { parseCliArgs } = await import(`${SRC}/util/cliargs.ts`);
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const BIN = path.join(REPO, 'bin', 'kala');
 
@@ -527,7 +528,7 @@ await test('block scalars, flow lists, empty goal, DONE status', () => {
   fs.writeFileSync(path.join(r, '.kala', 'state.yaml'), 'status: WEIRD\ngoal: "kept"\n');
   assert.strictEqual(state.loadState(r)?.status, 'IN_PROGRESS');
 });
-await test('live-ask: done [] is empty; resume+trust argv; timeout 15s; bad exit dropped', async () => {
+await test('live-ask: done [] is empty; resume+trust argv; timeout 30s; bad exit dropped', async () => {
   const empty = liveask.parseLiveAskYaml('done: []\ngoal: keep\n');
   assert.ok(!empty.done || empty.done.length === 0);
   assert.strictEqual(empty.goal, 'keep');
@@ -535,7 +536,7 @@ await test('live-ask: done [] is empty; resume+trust argv; timeout 15s; bad exit
   assert.deepStrictEqual(flow.done, ['a', 'b']);
   const block = liveask.parseLiveAskYaml('notes: |\n  line one\n  line two\n');
   assert.ok(block.notes?.includes('line one') && block.notes.includes('line two'));
-  assert.strictEqual(liveask.LIVE_ASK_TIMEOUT_MS, 15_000);
+  assert.strictEqual(liveask.LIVE_ASK_TIMEOUT_MS, 30_000);
   const argv = liveask.liveAskArgv(cfg.AGENTS.cursor, 'PROMPT', 'sid-1', true);
   assert.deepStrictEqual(argv.slice(0, 3), ['--resume', 'sid-1', '--trust']);
   assert.strictEqual(argv[argv.length - 1], 'PROMPT');
@@ -712,39 +713,45 @@ function runKala(args: string[], cwd: string): { status: number | null; stdout: 
 }
 
 await test('build dist and npm pack runs as plain JS', () => {
-  execFileSync(process.execPath, ['scripts/build-dist.mjs'], { cwd: REPO, stdio: 'ignore' });
-  const built = fs.readFileSync(path.join(REPO, 'dist', 'index.js'), 'utf8');
-  assert.ok(!built.includes("from './config.ts'"));
-  assert.ok(built.includes("from './config.js'") || built.includes('from "./config.js"'));
-  const packDir = path.join(ROOT, 'pack');
-  fs.mkdirSync(packDir);
-  const listed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
-    cwd: REPO, encoding: 'utf8',
-    env: { ...process.env, npm_config_cache: path.join(ROOT, 'npm-cache') },
-  }).trim().split('\n').pop()!;
-  const extract = path.join(ROOT, 'nm');
-  fs.mkdirSync(path.join(extract, 'node_modules'), { recursive: true });
-  execFileSync('tar', ['-xzf', path.join(packDir, listed), '-C', path.join(extract, 'node_modules')]);
-  fs.renameSync(path.join(extract, 'node_modules', 'package'), path.join(extract, 'node_modules', 'kalaga'));
-  const installed = path.join(extract, 'node_modules', 'kalaga');
-  assert.ok(fs.existsSync(path.join(installed, 'dist', 'index.js')));
-  assert.ok(!fs.existsSync(path.join(installed, 'src', 'index.ts')));
-  const empty = path.join(ROOT, 'empty-ver');
-  fs.mkdirSync(empty, { recursive: true });
-  const ver = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), '--version'], {
-    cwd: empty, encoding: 'utf8',
-    env: { ...process.env, HOME, KALA_HOME: KALA },
-  });
-  assert.strictEqual(ver.status, 0, ver.stderr);
-  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')) as { version: string };
-  assert.ok(ver.stdout.includes(pkg.version), ver.stdout);
-  assert.ok(!fs.existsSync(path.join(empty, '.kala', 'state.yaml')));
-  const st = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), 'status'], {
-    cwd: empty, encoding: 'utf8',
-    env: { ...process.env, HOME, KALA_HOME: KALA },
-  });
-  assert.strictEqual(st.status, 0, st.stderr);
-  assert.match(st.stdout, /kalaga/);
+  const repoDist = path.join(REPO, 'dist');
+  const hadDist = fs.existsSync(repoDist);
+  try {
+    execFileSync(process.execPath, ['scripts/build-dist.mjs'], { cwd: REPO, stdio: 'ignore' });
+    const built = fs.readFileSync(path.join(repoDist, 'index.js'), 'utf8');
+    assert.ok(!built.includes("from './config.ts'"));
+    assert.ok(built.includes("from './config.js'") || built.includes('from "./config.js"'));
+    const packDir = path.join(ROOT, 'pack');
+    fs.mkdirSync(packDir);
+    const listed = execFileSync('npm', ['pack', '--pack-destination', packDir], {
+      cwd: REPO, encoding: 'utf8',
+      env: { ...process.env, npm_config_cache: path.join(ROOT, 'npm-cache') },
+    }).trim().split('\n').pop()!;
+    const extract = path.join(ROOT, 'nm');
+    fs.mkdirSync(path.join(extract, 'node_modules'), { recursive: true });
+    execFileSync('tar', ['-xzf', path.join(packDir, listed), '-C', path.join(extract, 'node_modules')]);
+    fs.renameSync(path.join(extract, 'node_modules', 'package'), path.join(extract, 'node_modules', 'kalaga'));
+    const installed = path.join(extract, 'node_modules', 'kalaga');
+    assert.ok(fs.existsSync(path.join(installed, 'dist', 'index.js')));
+    assert.ok(!fs.existsSync(path.join(installed, 'src', 'index.ts')));
+    const empty = path.join(ROOT, 'empty-ver');
+    fs.mkdirSync(empty, { recursive: true });
+    const ver = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), '--version'], {
+      cwd: empty, encoding: 'utf8',
+      env: { ...process.env, HOME, KALA_HOME: KALA },
+    });
+    assert.strictEqual(ver.status, 0, ver.stderr);
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')) as { version: string };
+    assert.ok(ver.stdout.includes(pkg.version), ver.stdout);
+    assert.ok(!fs.existsSync(path.join(empty, '.kala', 'state.yaml')));
+    const st = spawnSync(process.execPath, [path.join(installed, 'bin', 'kala'), 'status'], {
+      cwd: empty, encoding: 'utf8',
+      env: { ...process.env, HOME, KALA_HOME: KALA },
+    });
+    assert.strictEqual(st.status, 0, st.stderr);
+    assert.match(st.stdout, /kalaga/);
+  } finally {
+    if (!hadDist) fs.rmSync(repoDist, { recursive: true, force: true });
+  }
 });
 await test('--version and unknown flags do not launch or write state', () => {
   const cwd = path.join(ROOT, 'flag-repo');
@@ -1995,6 +2002,401 @@ await test('K25/K26: workspace_roots/workspaceRoot resolution, schemas, overlap 
   // 3) Direct duplicate tool_use_id to same agent does not double-increment
   const gDup = hook.evaluateHook({ agent: 'grok', event: 'PostToolUse', repoDir: r, payload: { toolUseId: 'g-1', toolInput: { file_path: 'src/b.ts' } }, config: customCfg, env: { GROK_HOOK_EVENT: 'post_tool_use' } });
   assert.strictEqual(gDup.editsSinceCheckpoint, 2);
+});
+
+await test('GTM-1: scanChunk ignores clean-exit prose/code & tailFile/claudePlainFromJsonl drop partial fragments', () => {
+  // Short <600-char prose/bullets/backticks mentioning rate limits or HTTP 429 must not trigger on clean exit (0)
+  for (const falseLine of [
+    '- Handle HTTP 429 Too Many Requests and rate limit exceeded retries cleanly.',
+    'The middleware returns `429 Too Many Requests` when rate-limited by upstream.',
+    'Testing whether API rate limit handling triggers a false positive.',
+  ]) {
+    assert.strictEqual(scanChunk(falseLine, cfg.AGENTS.claude, 0), null, `clean exit false positive: ${falseLine}`);
+  }
+  // Explicit vendor limits still trigger cleanly on exit 0 and non-zero
+  assert.ok(scanChunk("You've hit your limit · resets 3pm", cfg.AGENTS.claude, 0)?.matched);
+  assert.ok(scanChunk('API Error: 429 rate_limit_error', cfg.AGENTS.claude, 0)?.matched);
+  assert.ok(scanChunk('429 too many requests', cfg.AGENTS.claude, 1)?.matched);
+
+  // Truncated non-JSON leading line (from tool_result) is dropped in claudePlainFromJsonl
+  const truncatedJsonl = [
+    'truncated tool_result quota exceeded line without valid JSON',
+    'null',
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'clean assistant reply' } }),
+  ].join('\n');
+  assert.strictEqual(launch.claudePlainFromJsonl(truncatedJsonl), 'clean assistant reply');
+
+  // tailFile drops partial leading line when file size > maxBytes
+  const logFile = path.join(ROOT, 'tail-leading.log');
+  fs.writeFileSync(logFile, 'first-line-truncated quota exceeded\nsecond-line-intact\n');
+  const tailed = launch.tailFile(logFile, 25);
+  assert.strictEqual(tailed, 'second-line-intact\n');
+});
+
+await test('GTM-2: KALA_LIVE_ASK=1 suppresses evaluateHook and bin/kala _hook with {} + zero writes', () => {
+  const r = path.join(ROOT, 'gtm2-liveask');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+  const res = hook.evaluateHook({
+    agent: 'claude',
+    event: 'Stop',
+    repoDir: r,
+    payload: {},
+    env: { KALA_LIVE_ASK: '1' },
+  });
+  assert.strictEqual(res.shouldNudge, false);
+  assert.strictEqual(fs.existsSync(path.join(r, '.kala', '.hook-state.json')), false);
+
+  const cli = spawnSync(
+    process.execPath,
+    [BIN, '_hook', '--agent', 'claude', '--event', 'Stop'],
+    { cwd: r, input: '{"stop_hook_active":false}', encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA, KALA_LIVE_ASK: '1' } },
+  );
+  assert.strictEqual(cli.status, 0, cli.stderr);
+  assert.deepStrictEqual(JSON.parse(cli.stdout.trim()), {});
+  assert.strictEqual(fs.existsSync(path.join(r, '.kala', '.hook-state.json')), false);
+});
+
+await test('GTM-3: agy metadataOnlyStore flag + non-matching log recover hints --assume-limit', () => {
+  assert.strictEqual(cfg.AGENTS.agy.metadataOnlyStore, true);
+  assert.strictEqual(cfg.AGENTS.claude.metadataOnlyStore, undefined);
+  const r = path.join(ROOT, 'gtm3-recover');
+  fs.mkdirSync(r, { recursive: true });
+  const st = state.blankState(r, 'main');
+  st.owner = 'claude';
+  state.saveState(r, st);
+  const dir = cfg.claudeProjectDir(r);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ok-session.jsonl'), JSON.stringify({
+    type: 'assistant', message: { role: 'assistant', content: 'all done without error' },
+  }) + '\n');
+  const out = runKala(['recover'], r);
+  assert.match(out.stderr, /no limit signature/);
+  assert.match(out.stderr, /--assume-limit/);
+});
+
+await test('GTM-4: resolveRepoDir finds git root from subdirectory & kala state reads root state', () => {
+  const r = path.join(ROOT, 'gtm4-gitroot');
+  const sub = path.join(r, 'apps', 'web');
+  fs.mkdirSync(sub, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: r });
+  const st = state.blankState(r, 'main');
+  st.goal = 'root canonical goal';
+  state.saveState(r, st);
+
+  assert.strictEqual(gitmod.resolveRepoDir(sub), fs.realpathSync.native(r));
+  const out = runKala(['state', 'goal'], sub);
+  assert.strictEqual(out.status, 0, out.stderr);
+  assert.match(out.stdout, /root canonical goal/);
+  assert.strictEqual(fs.existsSync(path.join(sub, '.kala')), false);
+});
+
+await test('GTM-5: bin/kala prefers src/ over dist/ & hooks.ts rejects symlinked ancestor (.grok)', () => {
+  // 1) Source-first bin/kala parity when both src/ and stale dist/ exist
+  const shimPkg = path.join(ROOT, 'gtm5-src-first');
+  fs.mkdirSync(path.join(shimPkg, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(shimPkg, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(shimPkg, 'dist'), { recursive: true });
+  fs.copyFileSync(BIN, path.join(shimPkg, 'bin', 'kala'));
+  fs.writeFileSync(path.join(shimPkg, 'src', 'index.ts'), "console.log('FROM_SRC');\n");
+  fs.writeFileSync(path.join(shimPkg, 'dist', 'index.js'), "console.log('FROM_DIST');\n");
+
+  const withSrc = spawnSync(process.execPath, [path.join(shimPkg, 'bin', 'kala')], {
+    cwd: ROOT, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  assert.strictEqual(withSrc.status, 0, withSrc.stderr);
+  assert.strictEqual(withSrc.stdout.trim(), 'FROM_SRC');
+
+  fs.rmSync(path.join(shimPkg, 'src'), { recursive: true, force: true });
+  const distOnly = spawnSync(process.execPath, [path.join(shimPkg, 'bin', 'kala')], {
+    cwd: ROOT, encoding: 'utf8', env: { ...process.env, HOME, KALA_HOME: KALA },
+  });
+  assert.strictEqual(distOnly.status, 0, distOnly.stderr);
+  assert.strictEqual(distOnly.stdout.trim(), 'FROM_DIST');
+
+  // 2) Symlinked ancestor .grok -> external dir refused on status/install/uninstall
+  const rSym = path.join(ROOT, 'gtm5-sym-ancestor');
+  const outside = path.join(ROOT, 'gtm5-outside-grok');
+  fs.mkdirSync(rSym, { recursive: true });
+  fs.mkdirSync(path.join(outside, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'hooks', 'kalaga-checkpoint.json'), '{"keep":true}\n');
+  fs.symlinkSync(outside, path.join(rSym, '.grok'));
+
+  const rep = hooks.hooksStatus(rSym);
+  assert.ok(rep.grokError && rep.grokError.includes('symlink'), `expected symlink error, got ${rep.grokError}`);
+  assert.throws(() => hooks.installHooks(rSym, { agents: ['grok'] }), /symlink/);
+  assert.throws(() => hooks.uninstallHooks(rSym, { agents: ['grok'] }), /symlink/);
+  assert.strictEqual(fs.readFileSync(path.join(outside, 'hooks', 'kalaga-checkpoint.json'), 'utf8'), '{"keep":true}\n');
+});
+
+section('OPS-004: scoped CLI flag parsing & state payload preservation (C1–C5)');
+await test('C1–C3: parseCliArgs handles state payloads, -- separator, and flag errors', () => {
+  const p1 = parseCliArgs(['state', 'goal', 'fix --quiet']);
+  assert.strictEqual(p1.action, 'run');
+  assert.deepStrictEqual(p1.positionals, ['state', 'goal', 'fix --quiet']);
+  assert.strictEqual(p1.flags.size, 0);
+
+  const p2 = parseCliArgs(['state', 'goal', 'fix', '--quiet', '--force']);
+  assert.strictEqual(p2.action, 'run');
+  assert.deepStrictEqual(p2.positionals, ['state', 'goal', 'fix', '--quiet', '--force']);
+  assert.strictEqual(p2.flags.size, 0);
+
+  const p3 = parseCliArgs(['state', 'next', '--version']);
+  assert.strictEqual(p3.action, 'run');
+  assert.deepStrictEqual(p3.positionals, ['state', 'next', '--version']);
+  assert.strictEqual(p3.flags.size, 0);
+
+  const p4 = parseCliArgs(['state', 'goal', '--', '--quiet']);
+  assert.strictEqual(p4.action, 'run');
+  assert.deepStrictEqual(p4.positionals, ['state', 'goal', '--quiet']);
+  assert.strictEqual(p4.flags.size, 0);
+
+  const p5 = parseCliArgs(['state', 'goal', 'fix', '--', 'crash']);
+  assert.strictEqual(p5.action, 'run');
+  assert.deepStrictEqual(p5.positionals, ['state', 'goal', 'fix', '--', 'crash']);
+  assert.strictEqual(p5.flags.size, 0);
+
+  const p6 = parseCliArgs(['state', '--help']);
+  assert.strictEqual(p6.action, 'help');
+
+  const p7 = parseCliArgs(['trust', 'revoke', '--', '--weird-dir']);
+  assert.strictEqual(p7.action, 'run');
+  assert.deepStrictEqual(p7.positionals, ['trust', 'revoke', '--weird-dir']);
+  assert.strictEqual(p7.flags.size, 0);
+
+  assert.strictEqual(parseCliArgs(['--foo']).action, 'error');
+  assert.strictEqual(parseCliArgs(['hooks', 'install', '--agents']).action, 'error');
+  assert.strictEqual(parseCliArgs(['hooks', 'install', '--agents', '--force']).action, 'error');
+});
+
+await test('C4/C5: CLI kala state preserves flag-like payload tokens without flag side effects', () => {
+  const r = path.join(ROOT, 'ops004-cli-state');
+  fs.mkdirSync(r, { recursive: true });
+  state.saveState(r, state.blankState(r, 'main'));
+
+  const setHelp = runKala(['state', 'goal', '--help'], r);
+  assert.strictEqual(setHelp.status, 0, setHelp.stderr);
+  assert.strictEqual(state.loadState(r)?.goal, '--help');
+
+  const setFlags = runKala(['state', 'goal', 'fix', '--quiet', '--assume-limit'], r);
+  assert.strictEqual(setFlags.status, 0, setFlags.stderr);
+  assert.strictEqual(state.loadState(r)?.goal, 'fix --quiet --assume-limit');
+
+  const setSep = runKala(['state', 'goal', '--', '--quiet'], r);
+  assert.strictEqual(setSep.status, 0, setSep.stderr);
+  assert.strictEqual(state.loadState(r)?.goal, '--quiet');
+
+  const stateHelp = runKala(['state', '--help'], r);
+  assert.strictEqual(stateHelp.status, 0, stateHelp.stderr);
+  assert.match(stateHelp.stdout, /kalaga — local handoff/);
+});
+
+section('FEAT-003 v2: handoff state & live-ask hardening (H12–H17)');
+await test('H12: shouldSkipLiveAsk checks hooks freshness, edits, thin state, and stale/missing state', () => {
+  const r = path.join(ROOT, 'h12-skip');
+  fs.mkdirSync(r, { recursive: true });
+
+  const thin = state.blankState(r, 'main');
+  state.saveState(r, thin);
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, null), { skip: false, reason: 'thin-state' });
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, thin), { skip: false, reason: 'thin-state' });
+
+  const rich = state.blankState(r, 'main');
+  rich.goal = 'implement FEAT-003 v2 hardening cleanly';
+  rich.done = ['updated config headless flags'];
+  rich.next_step = 'verify tests and e2e suite';
+  state.saveState(r, rich);
+  const st = fs.lstatSync(cfg.stateFile(r));
+
+  // Missing .hook-state.json -> fallback
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, rich), { skip: false, reason: 'no-hook-state' });
+
+  // Dirty editsSinceCheckpoint >= 1 -> fallback
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 1,
+    lastNudgeAt: null,
+    lastStateMtimeMs: st.mtimeMs,
+    lastStateSize: st.size,
+  });
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, rich), { skip: false, reason: 'uncheckpointed-edits' });
+
+  // Stale state.yaml relative to hookState.lastStateMtimeMs -> fallback
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 0,
+    lastNudgeAt: null,
+    lastStateMtimeMs: st.mtimeMs + 10_000,
+    lastStateSize: st.size,
+  });
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, rich), { skip: false, reason: 'stale-state' });
+
+  // Fresh hook checkpoint -> skip
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 0,
+    lastNudgeAt: null,
+    lastStateMtimeMs: st.mtimeMs,
+    lastStateSize: st.size,
+  });
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, rich), { skip: true, reason: 'checkpointed-by-hooks' });
+
+  // Missing state.yaml -> fallback
+  fs.rmSync(cfg.stateFile(r));
+  assert.deepStrictEqual(liveask.shouldSkipLiveAsk(r, rich), { skip: false, reason: 'missing-state' });
+});
+
+await test('H12: kala switch skips live-ask with stderr notice when hooks already checkpointed', () => {
+  const r = path.join(ROOT, 'h12-switch');
+  const binDir = path.join(ROOT, 'h12-bin');
+  const marker = path.join(ROOT, 'h12-claude-called');
+  fs.mkdirSync(r, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const claudeStub = path.join(binDir, 'claude');
+  fs.writeFileSync(claudeStub, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 0\n`);
+  fs.chmodSync(claudeStub, 0o755);
+
+  const grokStub = path.join(binDir, 'grok');
+  fs.writeFileSync(grokStub, '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(grokStub, 0o755);
+
+  const sid = '11111111-1111-4111-8111-111111111111';
+  const claudeProj = cfg.claudeProjectDir(r);
+  fs.mkdirSync(claudeProj, { recursive: true });
+  fs.writeFileSync(path.join(claudeProj, `${sid}.jsonl`), '{}\n');
+
+  const rich = state.blankState(r, 'main');
+  rich.owner = 'claude';
+  rich.goal = 'implement FEAT-003 v2 hardening cleanly';
+  rich.done = ['hook checkpointed state'];
+  rich.next_step = 'switch cleanly to grok';
+  rich.sessions = { claude: { id: sid, at: new Date().toISOString() } };
+  state.saveState(r, rich);
+  const st = fs.lstatSync(cfg.stateFile(r));
+  hook.saveHookState(r, {
+    editsSinceCheckpoint: 0,
+    lastNudgeAt: null,
+    lastStateMtimeMs: st.mtimeMs,
+    lastStateSize: st.size,
+  });
+
+  const out = spawnSync(process.execPath, [BIN, 'switch', 'grok'], {
+    cwd: r,
+    encoding: 'utf8',
+    env: { ...process.env, HOME, KALA_HOME: KALA, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
+  });
+  assert.strictEqual(out.status, 0, out.stderr);
+  assert.match(out.stderr, /kalaga: skipping live-ask — \.kala\/state\.yaml already checkpointed by hooks/);
+  assert.strictEqual(fs.existsSync(marker), false, 'claude live-ask binary must not be spawned');
+  assert.strictEqual(state.loadState(r)?.owner, 'grok');
+});
+
+await test('H13/H15: read-only headless flags for all 4 agents, no-edit prompt, and 30s timeout', () => {
+  assert.strictEqual(liveask.LIVE_ASK_TIMEOUT_MS, 30_000);
+  assert.deepStrictEqual(cfg.AGENTS.cursor.headless, ['--mode', 'ask', '-p', '--output-format', 'text']);
+  assert.deepStrictEqual(cfg.AGENTS.agy.headless, ['--mode', 'plan', '--effort', 'low', '--disable-slash-commands', '-p', '--output-format', 'text']);
+  assert.deepStrictEqual(cfg.AGENTS.grok.headless, ['--permission-mode', 'plan', '--output-format', 'plain', '--reasoning-effort', 'low', '--max-turns', '1', '-p']);
+  assert.deepStrictEqual(cfg.AGENTS.claude.headless, ['--disallowedTools', 'Edit,Write,MultiEdit,Bash', '-p', '--output-format', 'text']);
+
+  const cursorTrusted = liveask.liveAskArgv(cfg.AGENTS.cursor, 'P', 'sid-1', true);
+  assert.deepStrictEqual(cursorTrusted, ['--resume', 'sid-1', '--trust', '--mode', 'ask', '-p', '--output-format', 'text', 'P']);
+  const cursorUntrusted = liveask.liveAskArgv(cfg.AGENTS.cursor, 'P', 'sid-1', false);
+  assert.deepStrictEqual(cursorUntrusted, ['--resume', 'sid-1', '--mode', 'ask', '-p', '--output-format', 'text', 'P']);
+
+  assert.ok(liveask.LIVE_ASK_PROMPT.startsWith('Do NOT edit or write any files (including .kala/state.yaml). Reply on stdout with ONLY a YAML block (no markdown fences)'));
+  for (const key of ['goal', 'done', 'next_step', 'notes', 'negative_constraints']) {
+    assert.ok(liveask.LIVE_ASK_PROMPT.includes(key), `missing key ${key} in LIVE_ASK_PROMPT`);
+  }
+});
+
+await test('H14: liveAskAndMerge restores .kala/state.yaml when rogue child mutates or deletes it, preserving sessions UUID', async () => {
+  const r = path.join(ROOT, 'h14-restore');
+  fs.mkdirSync(r, { recursive: true });
+  const cursorUuid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const init = state.blankState(r, 'main');
+  init.owner = 'cursor';
+  init.goal = 'build ledgerlite milestone 2';
+  init.done = ['milestone 1 complete'];
+  init.next_step = 'run milestone 2 verification';
+  init.notes = 'critical handoff notes preserved';
+  init.sessions = { cursor: { id: cursorUuid, at: '2026-11-27T00:00:00.000Z' } };
+  state.saveState(r, init);
+
+  // 1) Rogue child overwrites .kala/state.yaml directly (replacing sessions UUID) and prints prose
+  const rogueOverwrite = path.join(ROOT, 'h14-rogue-overwrite.sh');
+  fs.writeFileSync(
+    rogueOverwrite,
+    `#!/bin/sh\ncat > ${JSON.stringify(cfg.stateFile(r))} <<'EOF'\ngoal: corrupted\nstatus: IN_PROGRESS\nowner: cursor\nnotes: wiped\nsessions:\n  cursor:\n    id: milestone-2\n    at: 2026-11-27T01:00:00.000Z\nEOF\necho "Updated state directly."\n`,
+  );
+  fs.chmodSync(rogueOverwrite, 0o755);
+  const rogueAgent = { ...cfg.AGENTS.cursor, interactive: [rogueOverwrite], headless: [] };
+
+  const errs: string[] = [];
+  const origErr = console.error;
+  console.error = (...a: unknown[]) => { errs.push(a.map(String).join(' ')); };
+  try {
+    await liveask.liveAskAndMerge(rogueAgent, r, 5000);
+  } finally {
+    console.error = origErr;
+  }
+
+  assert.ok(errs.some((l) => l.includes('live-ask (cursor) modified .kala/state.yaml directly — restored prior state')), errs.join('\n'));
+  const restored = state.loadState(r)!;
+  assert.strictEqual(restored.goal, 'build ledgerlite milestone 2');
+  assert.strictEqual(restored.notes, 'critical handoff notes preserved');
+  assert.strictEqual(restored.sessions.cursor?.id, cursorUuid);
+
+  // 2) Rogue child overwrites .kala/state.yaml AND outputs valid YAML patch -> restores first, then merges stdout patch
+  const rogueWithStdout = path.join(ROOT, 'h14-rogue-stdout.sh');
+  fs.writeFileSync(
+    rogueWithStdout,
+    `#!/bin/sh\necho "goal: hijacked" > ${JSON.stringify(cfg.stateFile(r))}\necho "next_step: start milestone 3"\n`,
+  );
+  fs.chmodSync(rogueWithStdout, 0o755);
+  await liveask.liveAskAndMerge({ ...cfg.AGENTS.cursor, interactive: [rogueWithStdout], headless: [] }, r, 5000);
+  const afterMerge = state.loadState(r)!;
+  assert.strictEqual(afterMerge.goal, 'build ledgerlite milestone 2');
+  assert.strictEqual(afterMerge.notes, 'critical handoff notes preserved');
+  assert.strictEqual(afterMerge.sessions.cursor?.id, cursorUuid);
+  assert.strictEqual(afterMerge.next_step, 'start milestone 3');
+
+  // 3) Rogue child deletes .kala/state.yaml -> restored cleanly
+  const rogueDelete = path.join(ROOT, 'h14-rogue-delete.sh');
+  fs.writeFileSync(rogueDelete, `#!/bin/sh\nrm -f ${JSON.stringify(cfg.stateFile(r))}\n`);
+  fs.chmodSync(rogueDelete, 0o755);
+  await liveask.liveAskAndMerge({ ...cfg.AGENTS.cursor, interactive: [rogueDelete], headless: [] }, r, 5000);
+  const afterDelete = state.loadState(r)!;
+  assert.strictEqual(afterDelete.sessions.cursor?.id, cursorUuid);
+  assert.strictEqual(afterDelete.next_step, 'start milestone 3');
+});
+
+await test('H16: KALA_LIVE_ASK=1 isolated to runLiveAsk child env and stripped from interactive spawns', async () => {
+  const r = path.join(ROOT, 'h16-env');
+  fs.mkdirSync(r, { recursive: true });
+  const envOut = path.join(ROOT, 'h16-liveask-env.txt');
+  const liveStub = path.join(ROOT, 'h16-live.sh');
+  fs.writeFileSync(liveStub, `#!/bin/sh\nprintf '%s' "$KALA_LIVE_ASK" > ${JSON.stringify(envOut)}\necho "next_step: ok"\n`);
+  fs.chmodSync(liveStub, 0o755);
+
+  const prevVal = process.env.KALA_LIVE_ASK;
+  delete process.env.KALA_LIVE_ASK;
+  try {
+    const out = await liveask.runLiveAsk({ ...cfg.AGENTS.claude, interactive: [liveStub], headless: [] }, r, 'P', 5000);
+    assert.ok(out.includes('next_step: ok'));
+    assert.strictEqual(fs.readFileSync(envOut, 'utf8'), '1');
+    assert.strictEqual(process.env.KALA_LIVE_ASK, undefined);
+
+    // Interactive runAgent must strip KALA_LIVE_ASK even if present in parent env
+    const intOut = path.join(ROOT, 'h16-int-env.txt');
+    const intStub = path.join(ROOT, 'h16-int.sh');
+    fs.writeFileSync(intStub, `#!/bin/sh\nprintf '%s' "\${KALA_LIVE_ASK-UNSET}" > ${JSON.stringify(intOut)}\nexit 0\n`);
+    fs.chmodSync(intStub, 0o755);
+    process.env.KALA_LIVE_ASK = '1';
+    const code = await launch.runAgent({ ...cfg.AGENTS.claude, interactive: [intStub], trustFlags: [], promptPrefix: '' }, r, null, false);
+    assert.strictEqual(code, 0);
+    assert.strictEqual(fs.readFileSync(intOut, 'utf8'), 'UNSET');
+  } finally {
+    if (prevVal === undefined) delete process.env.KALA_LIVE_ASK;
+    else process.env.KALA_LIVE_ASK = prevVal;
+  }
 });
 
 console.log(`\n${fail ? `\x1b[31m${fail} failed\x1b[0m, ` : ''}${pass} passed`);

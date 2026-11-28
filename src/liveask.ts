@@ -11,22 +11,64 @@
 // when we still have a fresh session id (switch), never against an agent
 // that just died on a limit.
 import { spawn } from 'node:child_process';
-import { resolveExecutable, resolveSpawnTarget } from './config.ts';
+import fs from 'node:fs';
+import { resolveExecutable, resolveSpawnTarget, stateFile } from './config.ts';
 import type { AgentConfig } from './config.ts';
-import { loadState, mergeState } from './state/state.ts';
+import { loadHookState } from './hook.ts';
+import { isThinState, loadState, mergeState, saveState } from './state/state.ts';
+import type { HandoffState } from './state/state.ts';
 import { sanitizeHandoffField, FIELD_MAX, sanitizeHandoffList } from './prompt.ts';
 import { resumeArgv } from './launch.ts';
 import { consumeIndentedBlock, isYamlBlockIndicator, parseYamlInlineList, parseYamlScalar, renderYamlBlock } from './util/yaml.ts';
 
-export const LIVE_ASK_TIMEOUT_MS = 15_000;
+export const LIVE_ASK_TIMEOUT_MS = 30_000;
 const LIVE_ASK_MAX_STDOUT = 64 * 1024;
 
 export const LIVE_ASK_PROMPT = [
-  'Update the Kalaga handoff. Reply with ONLY a YAML block (no markdown fences)',
+  'Do NOT edit or write any files (including .kala/state.yaml). Reply on stdout with ONLY a YAML block (no markdown fences)',
   'containing keys: goal, done (list of short bullets), next_step, notes,',
   'negative_constraints (list). Summarize what was accomplished and the single',
   'next action. Do not invent files you did not touch.',
 ].join(' ');
+
+function lstatOrNull(p: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/** FEAT-003 H12: skip live-ask when hooks already checkpointed `.kala/state.yaml`
+ *  with zero edits since the last checkpoint and the state is non-thin. */
+export function shouldSkipLiveAsk(
+  repoDir: string,
+  state: HandoffState | null,
+): { skip: boolean; reason?: string } {
+  if (!state || isThinState(state)) {
+    return { skip: false, reason: 'thin-state' };
+  }
+  let hookState = null;
+  try {
+    hookState = loadHookState(repoDir);
+  } catch {
+    return { skip: false, reason: 'no-hook-state' };
+  }
+  if (!hookState) {
+    return { skip: false, reason: 'no-hook-state' };
+  }
+  if (hookState.editsSinceCheckpoint > 0) {
+    return { skip: false, reason: 'uncheckpointed-edits' };
+  }
+  const st = lstatOrNull(stateFile(repoDir));
+  if (!st || st.isSymbolicLink() || !st.isFile()) {
+    return { skip: false, reason: 'missing-state' };
+  }
+  if (st.mtimeMs >= hookState.lastStateMtimeMs) {
+    return { skip: true, reason: 'checkpointed-by-hooks' };
+  }
+  return { skip: false, reason: 'stale-state' };
+}
 
 function isYamlNull(raw: string): boolean {
   const t = raw.trim().toLowerCase();
@@ -88,7 +130,7 @@ export function runLiveAsk(
     };
     const child = spawn(target.file, target.args, {
       cwd: repoDir,
-      env: process.env,
+      env: { ...process.env, KALA_LIVE_ASK: '1' },
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: false,
     });
@@ -178,10 +220,30 @@ export async function liveAskAndMerge(
 ): Promise<void> {
   const secs = Math.max(1, Math.round(timeoutMs / 1000));
   console.error(`kalaga: asking ${agent.key} for handoff summary (up to ${secs}s)...`);
+  const statePath = stateFile(repoDir);
+  const beforeState = loadState(repoDir);
+  const beforeStat = lstatOrNull(statePath);
   let raw = '';
   try {
     raw = await runLiveAsk(agent, repoDir, LIVE_ASK_PROMPT, timeoutMs, sessionId, trust);
   } catch { /* fail soft */ }
+  const afterStat = lstatOrNull(statePath);
+  if (afterStat?.isSymbolicLink()) {
+    console.error(`  kalaga: live-ask (${agent.key}) replaced .kala/state.yaml with a symlink — refusing to overwrite`);
+    return;
+  }
+  const modifiedDirectly = beforeState !== null && (
+    afterStat === null ||
+    (afterStat.isFile() && (
+      !beforeStat ||
+      afterStat.mtimeMs !== beforeStat.mtimeMs ||
+      afterStat.size !== beforeStat.size
+    ))
+  );
+  if (modifiedDirectly) {
+    saveState(repoDir, beforeState);
+    console.error(`  kalaga: live-ask (${agent.key}) modified .kala/state.yaml directly — restored prior state`);
+  }
   const patch = sanitizeLiveAskPatch(parseLiveAskYaml(raw));
   if (!Object.keys(patch).length) {
     console.error(`  kalaga: live-ask (${agent.key}) returned nothing usable — using existing state`);

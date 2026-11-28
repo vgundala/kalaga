@@ -1,6 +1,25 @@
 // Git facts for the handoff state. Best-effort: if we're not in a git repo,
 // return nulls and let the state degrade gracefully.
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/** Resolve the canonical repo root (git top-level if inside a worktree, else cwd),
+ *  normalized with realpathSync so subdirectory/symlink calls share .kala/state.yaml. */
+export function resolveRepoDir(cwd: string = process.cwd()): string {
+  let target = path.resolve(cwd);
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    }).trim();
+    if (top) target = path.resolve(cwd, top);
+  } catch { /* outside git repo or git unavailable */ }
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    try { return fs.realpathSync(target); } catch { return target; }
+  }
+}
 
 function git(repoDir: string, args: string[]): string | null {
   try {

@@ -30,7 +30,7 @@ Verify locally: `npm test` (stdlib suite; no network).
 
 These are accepted residuals — product choices or vendor limits, not forgotten bugs:
 
-1. **Dual channel.** Sanitized **inject** ≠ safe **on-disk** `.kala/state.yaml`. Standing orders tell the next agent to read that file. In an untrusted repo, assume the file can steer the agent beyond the inject.
+1. **Dual channel (repo-owned context).** Sanitized **inject** ≠ safe **on-disk** `.kala/state.yaml`. Standing orders tell the next agent to read that file. Treat `.kala/state.yaml` with the same trust boundary as `CLAUDE.md` or `.cursorrules`—only run `kala` in trusted repositories.
 2. **Child environment.** Interactive and live-ask children inherit full `process.env` (API keys, tokens already in your shell).
 3. **PATH at first resolve.** The first successful lookup of `claude` / `agy` / etc. is cached as an absolute path for that process. A hostile `PATH` before first use can bind the wrong binary; Kalaga does not hash-pin binaries.
 4. **Vendor stores.** Session tails and sqlite reads are local and bounded; Kalaga does not log stores wholesale. Those directories may still hold secrets belonging to the vendor CLIs.

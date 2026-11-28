@@ -24,7 +24,14 @@ export function matchLimit(line: string, agent: AgentConfig): string | null {
   return null;
 }
 
-const EXPLICIT_VENDOR_LIMIT = /hit your .*limit|usage limit|session limit|quota exceeded|spending limit|out of credits/i;
+const EXPLICIT_VENDOR_LIMIT =
+  /\bhit your [\w\s-]{0,30}limit\b|\b(?:usage|session|spending) limit\b|\bquota exceeded\b|\bout of (?:credits|quota)\b|\binsufficient (?:credits|quota|balance|funds)\b|\brate_limit_error\b/i;
+
+const MARKDOWN_OR_CODE_LINE = /^\s*(?:[-*+•]\s|\d+[.)]\s|#{1,6}\s|>\s?|\||```|\/\/|\/\*)/;
+const INLINE_CODE_TRIGGER = /`[^`]*(?:limit|quota|429|credits|requests)[^`]*`/i;
+const SECOND_PERSON_OR_ERR = /^\s*(?:(?:api\s+|http\s+)?error|fatal)\b|\byou(?:'ve| have|'re| are)\b|\byour (?:[\w-]+ )?(?:limit|quota|credits)\b/i;
+const EXPLANATORY_PROSE_CUE = /\b(?:when|if|whether|handle|handling|retry|retries|backoff|middleware|endpoint|returns?|returned|status code|false[- ]?positive|test(?:s|ing)?|mock|mention(?:s|ing)?)\b/i;
+const CLEAN_EXIT_ERROR_ANCHORED = /^\s*(?:(?:api\s+|http\s+)?error\b|fatal\b|429\s+too many requests\b|rate[ -]?limit(?:ed| exceeded| reached)\b)/i;
 
 function matchWindow(line: string, pat: string): string {
   const found = new RegExp(pat, 'i').exec(line);
@@ -42,15 +49,19 @@ const PRIOR_LIMIT_NOTE = /\b(?:agy|cursor|grok|claude)\s+limit\s+hit:/i;
 
 /** Scan a chunk of output; return the first LimitHit found, else null.
  *  The stored line is a ≤200 character window around the match. A clean
- *  exit (code 0) ignores a match buried in a long prose line unless it is
- *  an explicit vendor limit phrase. Echoed Kalaga handoff/avoid lines are
- *  skipped so prior limit notes never cause a false-positive cascade. */
+ *  exit (code 0) filters prose/markdown/code across all line lengths unless
+ *  the line is an explicit vendor limit or error-anchored message. Echoed
+ *  Kalaga handoff/avoid lines are skipped to avoid false-positive cascades. */
 export function scanChunk(chunk: string, agent: AgentConfig, exitCode: number | null = null): LimitHit | null {
   for (const line of chunk.split('\n')) {
     if (ECHOED_KALAGA_LINE.test(line) || PRIOR_LIMIT_NOTE.test(line)) continue;
     const m = matchLimit(line, agent);
     if (!m) continue;
-    if (exitCode === 0 && line.length > 600 && !EXPLICIT_VENDOR_LIMIT.test(line)) continue;
+    if (exitCode === 0) {
+      if (MARKDOWN_OR_CODE_LINE.test(line) || INLINE_CODE_TRIGGER.test(line)) continue;
+      if (!SECOND_PERSON_OR_ERR.test(line) && (line.length > 600 || EXPLANATORY_PROSE_CUE.test(line)) && !EXPLICIT_VENDOR_LIMIT.test(line)) continue;
+      if (!EXPLICIT_VENDOR_LIMIT.test(line) && !CLEAN_EXIT_ERROR_ANCHORED.test(line)) continue;
+    }
     return { agent: agent.key, matched: m, line: matchWindow(line, m), exitCode };
   }
   return null;

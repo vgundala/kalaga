@@ -31,9 +31,11 @@ export function noteClaudeFolderTrust(agent: AgentConfig, repoDir: string = proc
 
 function spawnAgent(resolved: string, args: string[], repoDir: string, key: string): Promise<number> {
   const target = resolveSpawnTarget(resolved, args);
+  const env = { ...process.env };
+  delete env.KALA_LIVE_ASK;
   return new Promise<number>((resolve) => {
     const child = spawn(target.file, target.args, {
-      cwd: repoDir, stdio: 'inherit', env: process.env, shell: false,
+      cwd: repoDir, stdio: 'inherit', env, shell: false,
     });
     child.on('error', (e) => { console.error(`kalaga: failed to start ${key}: ${e.message}`); resolve(127); });
     child.on('close', (code) => resolve(code ?? 0));
@@ -143,27 +145,50 @@ export async function resumeAgent(agent: AgentConfig, repoDir: string, id: strin
 // ---------- session-log tails: the raw text the trap scans after exit ----------
 const TAIL_BYTES = 64 * 1024;
 
-function tailFile(p: string): string {
+/** Read up to `maxBytes` from the end of `p`. When truncated (`start > 0`),
+ *  drops any partial leading line so downstream JSONL/regex scanners never
+ *  see mid-line fragments. Exported for testing. */
+export function tailFile(p: string, maxBytes = TAIL_BYTES): string {
   try {
     const st = fs.statSync(p);
-    const start = Math.max(0, st.size - TAIL_BYTES);
+    if (st.size === 0 || maxBytes <= 0) return '';
+    const start = Math.max(0, st.size - maxBytes);
+    const readFrom = start > 0 ? start - 1 : 0;
+    const len = st.size - readFrom;
     const fd = fs.openSync(p, 'r');
-    const buf = Buffer.alloc(st.size - start);
-    fs.readSync(fd, buf, 0, buf.length, start);
-    fs.closeSync(fd);
-    return buf.toString('utf8');
+    const buf = Buffer.alloc(len);
+    try {
+      fs.readSync(fd, buf, 0, len, readFrom);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (start === 0) return buf.toString('utf8');
+    if (buf[0] === 0x0a) return buf.subarray(1).toString('utf8');
+    const tail = buf.subarray(1);
+    const nl = tail.indexOf(0x0a);
+    return nl >= 0 ? tail.subarray(nl + 1).toString('utf8') : '';
   } catch { return ''; }
 }
 
-/** Assistant text and error strings from a Claude JSONL tail. User prompts
- *  and tool_result file payloads are skipped. Non-JSON lines pass through. */
+function tailStringLines(raw: string, maxChars = TAIL_BYTES): string {
+  if (raw.length <= maxChars) return raw;
+  const start = raw.length - maxChars;
+  if (raw[start - 1] === '\n') return raw.slice(start);
+  const nl = raw.indexOf('\n', start);
+  return nl >= 0 ? raw.slice(nl + 1) : '';
+}
+
+/** Assistant text and error strings from a Claude JSONL tail. User prompts,
+ *  tool_result payloads, and truncated/unparseable lines are discarded. */
 export function claudePlainFromJsonl(raw: string): string {
   const parts: string[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let j: Record<string, unknown>;
-    try { j = JSON.parse(trimmed) as Record<string, unknown>; } catch { parts.push(line); continue; }
+    let parsed: unknown;
+    try { parsed = JSON.parse(trimmed); } catch { continue; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const j = parsed as Record<string, unknown>;
     const type = typeof j.type === 'string' ? j.type : '';
     if (type === 'user' || type === 'tool_result') continue;
     const msg = (j.message && typeof j.message === 'object') ? j.message as Record<string, unknown> : undefined;
@@ -215,7 +240,7 @@ export async function lastSessionText(agent: AgentConfig, repoDir: string): Prom
         const db = new DatabaseSync(path.join(os.homedir(), '.grok', 'sessions', 'session_search.sqlite'), { readOnly: true });
         const row = db.prepare('select content from session_docs where cwd = ? order by updated_at desc limit 1').get(repoDir);
         db.close();
-        return row?.content ? String(row.content).slice(-TAIL_BYTES) : '';
+        return row?.content ? tailStringLines(String(row.content)) : '';
       } catch { return ''; }
     }
     case 'cursor': {

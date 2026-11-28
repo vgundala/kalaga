@@ -28,22 +28,27 @@ export interface AgentConfig {
    *  jsonl/sqlite → exact token heads where available; meta → session discovery
    *  and/or estimates only (agy: Antigravity conversation id; cursor: chat meta). */
   store: { kind: 'jsonl' | 'sqlite' | 'meta'; dir?: string };
+  /** True when the session text source only stores metadata (title/preview),
+   *  not actual transcript/error logs (agy conversation_metadata.json). */
+  metadataOnlyStore?: boolean;
 }
 
 /** Vendor limit phrases. Bare words like "quota" match ordinary prose. */
 const LIMIT_PATTERNS = [
   'usage limit',
+  '\\bhit your [\\w\\s-]{0,30}limit\\b',
   'quota exceeded',
-  'over.*quota',
+  '\\bover (?:your |the )?(?:[a-z]+ )?quota\\b',
   'out of quota',
   'insufficient (?:credits|quota|balance|funds)',
   'out of credits',
-  'rate.?limit(?:ed| exceeded)?',
+  '\\brate[ -]?limit(?:ed| exceeded| reached)\\b',
+  '\\brate_limit_(?:error|exceeded)\\b',
   'limit reached',
   'spending limit',
   'session limit',
   'too many requests',
-  'usage reset',
+  '\\b(?:usage|limit) resets? (?:at|in)\\b',
 ];
 
 export const AGENTS: Record<AgentKey, AgentConfig> = {
@@ -52,20 +57,21 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     interactive: ['agy'],
     promptPrefix: '-i',
     trustFlags: [],
-    headless: ['-p', '--output-format', 'text'],
+    headless: ['--mode', 'plan', '--effort', 'low', '--disable-slash-commands', '-p', '--output-format', 'text'],
     resumeByIdPrefix: ['--conversation'],
     ceiling: 250_000,
     limitPatterns: [...LIMIT_PATTERNS],
     // Session ids: ~/.gemini/antigravity-cli/cache/last_conversations.json
     // + conversations/<uuid>.db (see ledger.agySessionHint). No public token store.
     store: { kind: 'meta', dir: '.gemini/antigravity-cli' },
+    metadataOnlyStore: true,
   },
   cursor: {
     key: 'cursor',
     interactive: ['cursor-agent'],
     promptPrefix: '',
     trustFlags: ['--trust'],
-    headless: ['-p', '--output-format', 'text'],
+    headless: ['--mode', 'ask', '-p', '--output-format', 'text'],
     resumeByIdPrefix: ['--resume'],
     ceiling: 250_000,
     limitPatterns: [...LIMIT_PATTERNS],
@@ -76,7 +82,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     interactive: ['grok'],
     promptPrefix: '',
     trustFlags: [],
-    headless: ['--output-format', 'plain', '--reasoning-effort', 'low', '--max-turns', '1', '-p'],
+    headless: ['--permission-mode', 'plan', '--output-format', 'plain', '--reasoning-effort', 'low', '--max-turns', '1', '-p'],
     resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
     limitPatterns: [...LIMIT_PATTERNS],
@@ -87,7 +93,7 @@ export const AGENTS: Record<AgentKey, AgentConfig> = {
     interactive: ['claude'],
     promptPrefix: '',
     trustFlags: [],
-    headless: ['-p', '--output-format', 'text'],
+    headless: ['--disallowedTools', 'Edit,Write,MultiEdit,Bash', '-p', '--output-format', 'text'],
     resumeByIdPrefix: ['-r'],
     ceiling: 250_000,
     limitPatterns: [...LIMIT_PATTERNS],

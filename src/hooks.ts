@@ -45,10 +45,47 @@ function assertFileSafe(file: string, label: string): fs.Stats | null {
   return st;
 }
 
-function readJsonObjectSafe(file: string, label: string): { obj: Record<string, unknown>; mode: number | null; exists: boolean } {
-  const dir = path.dirname(file);
-  assertDirSafe(dir, label);
-  const st = assertFileSafe(file, label);
+function assertAncestorsSafe(repoDir: string, targetFile: string, label: string): void {
+  assertDirSafe(repoDir, label);
+  const rel = path.relative(repoDir, targetFile);
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`refusing to access ${label}: ${targetFile} escapes repo root`);
+  }
+  const dirRel = path.dirname(rel);
+  if (dirRel && dirRel !== '.') {
+    let cur = repoDir;
+    for (const seg of dirRel.split(path.sep)) {
+      cur = path.join(cur, seg);
+      const st = lstatOrNull(cur);
+      if (!st) break;
+      if (st.isSymbolicLink()) throw new Error(`refusing to access ${label}: ${cur} is a symlink`);
+      if (!st.isDirectory()) throw new Error(`refusing to access ${label}: ${cur} is not a directory`);
+    }
+  }
+  assertFileSafe(targetFile, label);
+}
+
+function ensureSafeDirChain(repoDir: string, dir: string, label: string): void {
+  const rel = path.relative(repoDir, dir);
+  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error(`refusing to access ${label}: ${dir} escapes repo root`);
+  }
+  assertDirSafe(repoDir, label);
+  if (!rel || rel === '.') return;
+  let cur = repoDir;
+  for (const seg of rel.split(path.sep)) {
+    cur = path.join(cur, seg);
+    const st = assertDirSafe(cur, label);
+    if (!st) {
+      fs.mkdirSync(cur, { mode: 0o700 });
+      assertDirSafe(cur, label);
+    }
+  }
+}
+
+function readJsonObjectSafe(repoDir: string, file: string, label: string): { obj: Record<string, unknown>; mode: number | null; exists: boolean } {
+  assertAncestorsSafe(repoDir, file, label);
+  const st = lstatOrNull(file);
   if (!st) return { obj: {}, mode: null, exists: false };
 
   const raw = fs.readFileSync(file, 'utf8');
@@ -67,13 +104,10 @@ function readJsonObjectSafe(file: string, label: string): { obj: Record<string, 
   return { obj: parsed, mode: st.mode & 0o777, exists: true };
 }
 
-function atomicWriteJson(file: string, obj: Record<string, unknown>, existingMode: number | null, label: string): void {
+function atomicWriteJson(repoDir: string, file: string, obj: Record<string, unknown>, existingMode: number | null, label: string): void {
   const dir = path.dirname(file);
-  const dirSt = assertDirSafe(dir, label);
-  if (!dirSt) {
-    fs.mkdirSync(dir, { recursive: true });
-    assertDirSafe(dir, label);
-  }
+  assertAncestorsSafe(repoDir, file, label);
+  ensureSafeDirChain(repoDir, dir, label);
   assertFileSafe(file, label);
 
   const mode = existingMode ?? 0o600;
@@ -208,7 +242,7 @@ function stripKalagaFromClaudeEventList(list: unknown): { next: unknown[]; remov
 
 function installClaudeHooks(repoDir: string, kalaBin: string, cfg: HookConfig): void {
   const file = path.join(repoDir, '.claude', 'settings.local.json');
-  const { obj, mode } = readJsonObjectSafe(file, '.claude/settings.local.json');
+  const { obj, mode } = readJsonObjectSafe(repoDir, file, '.claude/settings.local.json');
 
   let hooksObj: Record<string, unknown>;
   if (obj.hooks === undefined) {
@@ -251,12 +285,12 @@ function installClaudeHooks(repoDir: string, kalaBin: string, cfg: HookConfig): 
   hooksObj.PostToolUse = post;
   hooksObj.Stop = stop;
   const nextObj: Record<string, unknown> = { ...obj, hooks: hooksObj };
-  atomicWriteJson(file, nextObj, mode, '.claude/settings.local.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.claude/settings.local.json');
 }
 
 function uninstallClaudeHooks(repoDir: string): boolean {
   const file = path.join(repoDir, '.claude', 'settings.local.json');
-  const { obj, mode, exists } = readJsonObjectSafe(file, '.claude/settings.local.json');
+  const { obj, mode, exists } = readJsonObjectSafe(repoDir, file, '.claude/settings.local.json');
   if (!exists) return false;
   if (!isPlainObject(obj.hooks)) return false;
 
@@ -279,7 +313,7 @@ function uninstallClaudeHooks(repoDir: string): boolean {
   if (Object.keys(hooksObj).length > 0) nextObj.hooks = hooksObj;
   else delete nextObj.hooks;
 
-  atomicWriteJson(file, nextObj, mode, '.claude/settings.local.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.claude/settings.local.json');
   return true;
 }
 
@@ -307,7 +341,7 @@ function warnIfNotGitignored(repoDir: string, relPath: string): boolean {
 
 function installAgyHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
   const file = path.join(repoDir, '.agents', 'hooks.json');
-  const { obj, mode } = readJsonObjectSafe(file, '.agents/hooks.json');
+  const { obj, mode } = readJsonObjectSafe(repoDir, file, '.agents/hooks.json');
 
   const nextObj: Record<string, unknown> = {
     ...obj,
@@ -341,13 +375,13 @@ function installAgyHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { g
     },
   };
 
-  atomicWriteJson(file, nextObj, mode, '.agents/hooks.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.agents/hooks.json');
   return { gitignoreWarning: warnIfNotGitignored(repoDir, '.agents/hooks.json') };
 }
 
 function installCursorHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
   const file = path.join(repoDir, '.cursor', 'hooks.json');
-  const { obj, mode } = readJsonObjectSafe(file, '.cursor/hooks.json');
+  const { obj, mode } = readJsonObjectSafe(repoDir, file, '.cursor/hooks.json');
 
   let hooksObj: Record<string, unknown>;
   if (obj.hooks === undefined) {
@@ -384,13 +418,13 @@ function installCursorHooks(repoDir: string, kalaBin: string, cfg: HookConfig): 
     ...obj,
     hooks: hooksObj,
   };
-  atomicWriteJson(file, nextObj, mode, '.cursor/hooks.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.cursor/hooks.json');
   return { gitignoreWarning: warnIfNotGitignored(repoDir, '.cursor/hooks.json') };
 }
 
 function uninstallCursorHooks(repoDir: string): boolean {
   const file = path.join(repoDir, '.cursor', 'hooks.json');
-  const { obj, mode, exists } = readJsonObjectSafe(file, '.cursor/hooks.json');
+  const { obj, mode, exists } = readJsonObjectSafe(repoDir, file, '.cursor/hooks.json');
   if (!exists || !isPlainObject(obj.hooks)) return false;
 
   const hooksObj: Record<string, unknown> = { ...obj.hooks };
@@ -410,7 +444,7 @@ function uninstallCursorHooks(repoDir: string): boolean {
   if (Object.keys(hooksObj).length > 0) nextObj.hooks = hooksObj;
   else delete nextObj.hooks;
 
-  atomicWriteJson(file, nextObj, mode, '.cursor/hooks.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.cursor/hooks.json');
   return true;
 }
 
@@ -436,7 +470,7 @@ function stripKalagaFromGroupedList(list: unknown, agentKey: HookAgentKey): { ne
 
 function installGrokHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { gitignoreWarning: boolean } {
   const file = path.join(repoDir, '.grok', 'hooks', 'kalaga-checkpoint.json');
-  const { obj, mode } = readJsonObjectSafe(file, GROK_HOOK_REL);
+  const { obj, mode } = readJsonObjectSafe(repoDir, file, GROK_HOOK_REL);
 
   let hooksObj: Record<string, unknown>;
   if (obj.hooks === undefined) {
@@ -467,14 +501,14 @@ function installGrokHooks(repoDir: string, kalaBin: string, cfg: HookConfig): { 
   hooksObj.PostToolUse = post;
   hooksObj.Stop = stop;
   const nextObj: Record<string, unknown> = { ...obj, hooks: hooksObj };
-  atomicWriteJson(file, nextObj, mode, GROK_HOOK_REL);
+  atomicWriteJson(repoDir, file, nextObj, mode, GROK_HOOK_REL);
   console.error('kalaga: note — Grok skips project hooks until this folder is trusted (/hooks-trust in Grok).');
   return { gitignoreWarning: warnIfNotGitignored(repoDir, GROK_HOOK_REL) };
 }
 
 function uninstallGrokHooks(repoDir: string): boolean {
   const file = path.join(repoDir, '.grok', 'hooks', 'kalaga-checkpoint.json');
-  const { obj, mode, exists } = readJsonObjectSafe(file, GROK_HOOK_REL);
+  const { obj, mode, exists } = readJsonObjectSafe(repoDir, file, GROK_HOOK_REL);
   if (!exists || !isPlainObject(obj.hooks)) return false;
 
   const hooksObj: Record<string, unknown> = { ...obj.hooks };
@@ -495,24 +529,23 @@ function uninstallGrokHooks(repoDir: string): boolean {
   else delete nextObj.hooks;
 
   if (Object.keys(nextObj).length === 0) {
-    assertDirSafe(path.dirname(file), GROK_HOOK_REL);
-    assertFileSafe(file, GROK_HOOK_REL);
+    assertAncestorsSafe(repoDir, file, GROK_HOOK_REL);
     fs.unlinkSync(file);
   } else {
-    atomicWriteJson(file, nextObj, mode, GROK_HOOK_REL);
+    atomicWriteJson(repoDir, file, nextObj, mode, GROK_HOOK_REL);
   }
   return true;
 }
 
 function uninstallAgyHooks(repoDir: string): boolean {
   const file = path.join(repoDir, '.agents', 'hooks.json');
-  const { obj, mode, exists } = readJsonObjectSafe(file, '.agents/hooks.json');
+  const { obj, mode, exists } = readJsonObjectSafe(repoDir, file, '.agents/hooks.json');
   if (!exists) return false;
   if (!Object.prototype.hasOwnProperty.call(obj, 'kalaga-checkpoint')) return false;
 
   const nextObj: Record<string, unknown> = { ...obj };
   delete nextObj['kalaga-checkpoint'];
-  atomicWriteJson(file, nextObj, mode, '.agents/hooks.json');
+  atomicWriteJson(repoDir, file, nextObj, mode, '.agents/hooks.json');
   return true;
 }
 
@@ -638,7 +671,7 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
   let claudeEvents: string[] = [];
   let claudeError: string | null = null;
   try {
-    const claudeParsed = readJsonObjectSafe(claudeFile, '.claude/settings.local.json');
+    const claudeParsed = readJsonObjectSafe(repoDir, claudeFile, '.claude/settings.local.json');
     claudeEvents = claudeParsed.exists ? countGroupedEvents(claudeParsed.obj, 'claude', ['PostToolUse', 'Stop']) : [];
   } catch (e) {
     claudeError = shortStatusError(e, '.claude/settings.local.json');
@@ -648,7 +681,7 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
   let agyInstalled = false;
   let agyError: string | null = null;
   try {
-    const agyParsed = readJsonObjectSafe(agyFile, '.agents/hooks.json');
+    const agyParsed = readJsonObjectSafe(repoDir, agyFile, '.agents/hooks.json');
     agyInstalled = agyParsed.exists && Object.prototype.hasOwnProperty.call(agyParsed.obj, 'kalaga-checkpoint');
   } catch (e) {
     agyError = shortStatusError(e, '.agents/hooks.json');
@@ -658,7 +691,7 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
   let cursorEvents: string[] = [];
   let cursorError: string | null = null;
   try {
-    const cursorParsed = readJsonObjectSafe(cursorFile, '.cursor/hooks.json');
+    const cursorParsed = readJsonObjectSafe(repoDir, cursorFile, '.cursor/hooks.json');
     cursorEvents = cursorParsed.exists ? countCursorEvents(cursorParsed.obj) : [];
   } catch (e) {
     cursorError = shortStatusError(e, '.cursor/hooks.json');
@@ -668,7 +701,7 @@ export function hooksStatus(repoDir: string, nowMs = Date.now()): HooksStatusRep
   let grokEvents: string[] = [];
   let grokError: string | null = null;
   try {
-    const grokParsed = readJsonObjectSafe(grokFile, GROK_HOOK_REL);
+    const grokParsed = readJsonObjectSafe(repoDir, grokFile, GROK_HOOK_REL);
     grokEvents = grokParsed.exists ? countGroupedEvents(grokParsed.obj, 'grok', ['PostToolUse', 'Stop']) : [];
   } catch (e) {
     grokError = shortStatusError(e, GROK_HOOK_REL);

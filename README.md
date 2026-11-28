@@ -41,6 +41,8 @@ kala --help
 
 ### Windows (PowerShell)
 
+> **Platform scope:** Full CLI + project hooks (`kala hooks install`) support **Linux, macOS, and WSL** (`sh` hook commands). Native Windows (`cmd.exe`) project hooks are not yet supported; use WSL for hook integration.
+
 ```powershell
 git clone https://github.com/vgundala/kalaga.git
 cd kalaga
@@ -131,13 +133,13 @@ a limit assumption nobody saw.
 
 **Cross-agent launches** receive a sanitized protocol inject (goal, done, next, avoid, standing orders). Optional `inject_rich_prompt: true` in `~/.kala/config.yaml` adds notes and modified files (also sanitized).
 
-**Live-ask:** `kala switch` may ask the previous agent for a YAML update when Kalaga still has a fresh session id for that agent (headless, 15 second timeout). The call resumes that session and passes the vendor trust flag when this directory already has a Kalaga grant. A limit exit does not ask the agent that just ran out. If the ask fails, the existing state stays.
+**Live-ask:** `kala switch` may ask the previous agent for a YAML update when Kalaga still has a fresh session id for that agent (headless, 30 second timeout). The call resumes that session and passes the vendor trust flag when this directory already has a Kalaga grant. A limit exit does not ask the agent that just ran out. If the ask fails, the existing state stays.
 
 **Continuous checkpointing (`kala hooks`):** Run `kala hooks install` in a project to wire opt-in, non-destructive lifecycle hooks for the supported agents found on your `PATH` — Claude Code (`.claude/settings.local.json`), Antigravity (`.agents/hooks.json`), Cursor (`.cursor/hooks.json`), and/or Grok (`.grok/hooks/kalaga-checkpoint.json`) — or pass `--agents claude,agy,cursor,grok` explicitly. While you work, Kalaga tracks edits and checkpoint age in `.kala/.hook-state.json` (deduplicating cross-vendor calls) and nudges the active agent to refresh `.kala/state.yaml` when stale. Grok requires project folder trust (`/hooks-trust`) before executing repo hooks. Use `kala hooks status` to inspect installed hooks and checkpoint age, and `kala hooks uninstall` to remove only Kalaga entries cleanly.
 
 **Same-agent continuity:** `kala resume` reopens a captured session id when the vendor supports it. The conversation already has context, so Kalaga does not inject a handoff prompt. Session ids are discovered from each vendor’s local store when a stable signature exists (Claude jsonl, Cursor chat meta, Grok sqlite, Antigravity `~/.gemini/antigravity-cli`).
 
-**Headroom:** `kala status` labels Claude and Grok `[logged]` (usage recorded in the local store; Claude counts turns from the last 5 hours). Cursor is `[est.]`. agy shows no token spend (no public usage API); its conversation id is still captured for resume and live-ask when present. These are not the vendor’s remaining balance.
+**Headroom:** `kala status` labels Claude and Grok `[logged]` (usage recorded in the local store for the current repo only; Claude counts turns from the last 5 hours — not account-wide or web/mobile usage). Cursor is `[est.]`. agy shows no token spend (no public usage API); its conversation id is still captured for resume and live-ask when present. These are not the vendor’s remaining balance.
 
 Add `.kala/` to `.gitignore`. Never store secrets in handoff state.
 
@@ -149,7 +151,7 @@ Kalaga owns the handoff contract (`.kala/state.yaml`, switch, resume, ranking). 
 |------|----------------|-----------------|
 | **Claude folder trust** | Claude’s own “trust this folder?” (often defaults to No / exit) | Noted on stderr right before Claude launches. Kalaga’s `trust.yaml` does not cover this. |
 | **Antigravity (agy) sessions** | Resume / live-ask after `agy` | Ids from `~/.gemini/antigravity-cli/cache/last_conversations.json` when `conversations/<uuid>.db` exists. No token ledger. |
-| **Grok live-ask** | Large sessions may exceed the 15s ask | Headless ask uses low reasoning / one turn; on miss: keep existing `state.yaml`. |
+| **Grok live-ask** | Large sessions may exceed the 30s ask | Headless ask uses low reasoning / one turn; on miss: keep existing `state.yaml`. |
 | **Cursor headroom** | `[est.]` in `kala status` | Coarse heuristic only; not quota. |
 | **Limit detection** | Limit menu after exit | Best-effort phrase match on local session tails. |
 | **Vendor login / plan UI** | Sign-in or upgrade banners inside a TUI | Not automated. |
